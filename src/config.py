@@ -13,11 +13,10 @@ CORPUS_DIR = REPO_ROOT / "corpus"
 INDEX_DIR = REPO_ROOT / ".index" / "lancedb"
 INDEX_TABLE = "chunks"
 
-# ARCH-Q: "своя копия Qwen3.5" по плану должна лежать в репозитории — точный
-# HF-репо/тег квантованной MLX-версии не проверен на этой машине. Дефолт ниже
-# взят по образцу ~/Dev/storyreel/storyreel/providers/plan/local_mlx.py
-# (там mlx-community/Qwen3.5-4B-4bit) — подтвердить при первом реальном запуске
-# на M4 Air и заменить на путь к локальной копии, если она уже скачана.
+# Подтверждено реальным запуском на M4 Air 2026-08-04: репо существует и
+# грузится через mlx_lm.load (~2.9ГБ, уже был в HF-кэше этой машины). Проект
+# по плану должен держать "свою копию" в репозитории — сейчас грузим из HF
+# кэша, копирование в репо не сделано (не в скоупе Milestone 0).
 LLM_HF_REPO = "mlx-community/Qwen3.5-4B-4bit"
 LLM_MAX_TOKENS = 512
 LLM_TEMPERATURE = 0.2

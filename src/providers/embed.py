@@ -20,9 +20,16 @@ def _load() -> Any:
         return _model
     from FlagEmbedding import BGEM3FlagModel  # lazy import: тяжёлая torch-зависимость
 
-    # ARCH-Q: точное имя kwarg устройства в установленной версии FlagEmbedding
-    # (device= vs devices=) не проверено на этой машине — пробуем варианты,
-    # последний фолбэк отдаёт выбор устройства библиотеке по умолчанию.
+    # Подтверждено реальным запуском на M4 Air 2026-08-04: kwarg device=
+    # принимается этой версией FlagEmbedding, модель реально грузится на MPS
+    # (next(model.model.parameters()).device == mps:0). Варианты ниже оставлены
+    # как защита от дрейфа версии библиотеки.
+    #
+    # ВАЖНО: BGEM3FlagModel сам вызывает snapshot_download БЕЗ allow_patterns и
+    # докачивает весь репозиторий (~4.3ГБ: pytorch_model.bin + дублирующий onnx/
+    # + imgs/), даже если нужные для инференса файлы уже скачаны отдельно.
+    # Тот же паттерн, что и с ltx-2-mlx в storyreel — библиотека не разделяет
+    # "что реально используется" от "что лежит в репозитории".
     last_error: Exception | None = None
     for kwargs in ({"device": config.EMBED_DEVICE}, {"devices": [config.EMBED_DEVICE]}, {}):
         try:

@@ -32,11 +32,11 @@ def build_chat_prompt(system_prompt: str, user_message: str) -> str:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
-    # ARCH-Q: не передаём enable_thinking= — неизвестно, поддерживает ли шаблон
-    # реальной "своей копии" Qwen3.5 этот kwarg (в storyreel он специфичен для
-    # Qwen3). Проверить на реальном токенайзере после первой загрузки.
+    # Подтверждено на реальном токенайзере mlx-community/Qwen3.5-4B-4bit:
+    # без enable_thinking=False модель льёт "Thinking Process: ..." в ответ
+    # вместо цитируемого ответа по контексту.
     return _tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
 
 
