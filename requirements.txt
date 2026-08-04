@@ -1,0 +1,6 @@
+mlx-lm>=0.28
+FlagEmbedding>=1.3
+lancedb>=0.15
+pyarrow
+numpy
+pytest
