@@ -58,3 +58,37 @@ def test_rerank_empty_candidates_skips_model_load(monkeypatch):
 
     monkeypatch.setattr(rerank, "_load", _fail_load)
     assert rerank.rerank("query", [], top_n=5) == []
+
+
+def test_score_pairs_scores_each_pair_with_its_own_query(monkeypatch):
+    monkeypatch.setattr(rerank, "_load", lambda: (object(), object()))
+    monkeypatch.setattr(rerank, "_release", lambda model, tokenizer: None)
+    monkeypatch.setattr(
+        rerank, "_score_one", lambda model, tokenizer, query, text: len(query) + len(text)
+    )
+
+    scores = rerank.score_pairs([("q1", "aa"), ("q22", "b")])
+    assert scores == [len("q1") + len("aa"), len("q22") + len("b")]
+
+
+def test_score_pairs_empty_skips_model_load(monkeypatch):
+    def _fail_load():
+        raise AssertionError("_load must not be called for empty pairs")
+
+    monkeypatch.setattr(rerank, "_load", _fail_load)
+    assert rerank.score_pairs([]) == []
+
+
+def test_score_pairs_releases_model_even_on_scoring_error(monkeypatch):
+    released = []
+    monkeypatch.setattr(rerank, "_load", lambda: ("model", "tokenizer"))
+    monkeypatch.setattr(rerank, "_release", lambda model, tokenizer: released.append((model, tokenizer)))
+    monkeypatch.setattr(
+        rerank, "_score_one", lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    try:
+        rerank.score_pairs([("q", "t")])
+    except RuntimeError:
+        pass
+    assert released == [("model", "tokenizer")]

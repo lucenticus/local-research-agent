@@ -1,8 +1,10 @@
 """Юнит-тесты agent/loop.py.
 
-test_loop_* — funnel.run и _is_covered замоканы (офлайн, проверяем только
-логику контроллера: покрытие, дедуп по подвопросам, расширение
-discovery_limit, остановку по бюджету).
+test_loop_* — funnel.run, _is_covered и _draft_is_faithful замоканы (офлайн,
+проверяем только логику контроллера: покрытие, дедуп по подвопросам,
+расширение discovery_limit, остановку по бюджету). `_draft_is_faithful`
+мокается на True в этих тестах — сама retry-логика по faithfulness
+проверяется отдельно в test_loop_faithfulness_retry_*.
 
 test_is_covered_* — сама gap-оценка (embed/store/rerank замоканы): порог
 score + счёт различных источников (найдено реальным прогоном 2026-08-05, что
@@ -19,6 +21,7 @@ from src.providers import embed, rerank
 
 def test_loop_covers_in_one_pass_when_already_covered(monkeypatch):
     monkeypatch.setattr(loop, "_is_covered", lambda store, sq: True)
+    monkeypatch.setattr(loop, "_draft_is_faithful", lambda question, store: True)
     monkeypatch.setattr(loop.funnel, "run", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("funnel.run не должен вызываться, если уже покрыто")
     ))
@@ -43,6 +46,7 @@ def test_loop_runs_multiple_iterations_until_covered(monkeypatch):
         calls["funnel_run"] += 1
 
     monkeypatch.setattr(loop, "_is_covered", fake_is_covered)
+    monkeypatch.setattr(loop, "_draft_is_faithful", lambda question, store: True)
     monkeypatch.setattr(loop.funnel, "run", fake_funnel_run)
 
     state = loop.run(
@@ -162,3 +166,52 @@ def test_is_covered_counts_only_distinct_sources_above_threshold(monkeypatch):
     store = _FakeStore(hits=hits)
 
     assert loop._is_covered(store, SubQuestion(text="q")) is False
+
+
+def test_loop_reopens_once_when_draft_is_not_faithful(monkeypatch):
+    faithful_calls = []
+
+    def fake_draft_is_faithful(question, store):
+        faithful_calls.append(1)
+        return False  # никогда не "честный" - должны увидеть ровно один retry
+
+    monkeypatch.setattr(loop, "_is_covered", lambda store, sq: True)
+    monkeypatch.setattr(loop, "_draft_is_faithful", fake_draft_is_faithful)
+    monkeypatch.setattr(loop.funnel, "run", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("funnel.run не должен вызываться - подвопрос уже covered")
+    ))
+
+    state = loop.run(
+        "question?", sources=[], store=object(),
+        budget=Budget(max_iterations=10, max_deep_reads=100, max_seconds=None),
+    )
+
+    # Ровно один вызов _draft_is_faithful - после него retry использован, и
+    # цикл завершается независимо от результата ВТОРОЙ проверки (её вообще
+    # не будет - именно это здесь и проверяется).
+    assert len(faithful_calls) == 1
+    assert state.iterations == 2  # исходный проход + один retry-проход
+    assert state.open_sub_questions() == []
+    assert state.gaps == []
+
+
+def test_loop_does_not_reopen_when_draft_is_already_faithful(monkeypatch):
+    faithful_calls = []
+
+    def fake_draft_is_faithful(question, store):
+        faithful_calls.append(1)
+        return True
+
+    monkeypatch.setattr(loop, "_is_covered", lambda store, sq: True)
+    monkeypatch.setattr(loop, "_draft_is_faithful", fake_draft_is_faithful)
+    monkeypatch.setattr(loop.funnel, "run", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("funnel.run не должен вызываться - подвопрос уже covered")
+    ))
+
+    state = loop.run(
+        "question?", sources=[], store=object(),
+        budget=Budget(max_iterations=10, max_deep_reads=100, max_seconds=None),
+    )
+
+    assert len(faithful_calls) == 1
+    assert state.iterations == 1  # без retry - сразу честный черновик

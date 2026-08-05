@@ -16,6 +16,13 @@ Gap-оценка — эвристика (§7: старт с порога пок�
 Retrieve сначала смотрит в уже существующий индекс (в т.ч. прочитанное
 прошлыми запросами) — это и есть кэш-хит: если предыдущий запрос уже привёл
 нужную статью в LanceDB, discovery/deep-read на этот раз не понадобится.
+
+Milestone 4: когда все подвопросы покрыты, черновой синтез прогоняется через
+`agent/evaluate.py` — если faithfulness ниже `EVAL_FAITHFULNESS_THRESHOLD`,
+подвопросы переоткрываются на ОДИН дополнительный проход (в пределах budget),
+чтобы воронка собрала больше подтверждающих источников перед финалом. Больше
+одного такого переоткрытия не делаем — иначе при системно слабом покрытии
+можно застрять в переоткрытии до полного исчерпания budget без пользы.
 """
 
 from __future__ import annotations
@@ -24,8 +31,9 @@ from .. import config
 from ..providers import embed, rerank
 from ..sources.base import Source
 from ..store.lancedb_store import LanceDBStore
-from . import funnel, planner
-from .state import Budget, ResearchState, SubQuestion
+from . import evaluate, funnel, planner
+from . import synthesize as synthesize_module
+from .state import Budget, ResearchState, SubQuestion, SubQuestionStatus
 
 
 def _distinct_sources(hits: list[dict]) -> set[str]:
@@ -47,6 +55,25 @@ def _is_covered(store: LanceDBStore, sub_question: SubQuestion) -> bool:
     return len(_distinct_sources(relevant_hits)) >= config.FUNNEL_MIN_SOURCES_TO_COVER
 
 
+def _draft_is_faithful(question: str, store: LanceDBStore) -> bool:
+    """Черновой синтез по текущему индексу + faithfulness-проверка.
+
+    Пустой/отсутствующий индекс или пустая выдача — не считаем "нечестным",
+    просто нечего проверять (возвращаем True, чтобы не зациклиться на
+    заведомо пустом retrieval — этим уже занимается gap-оценка выше).
+    """
+    query_vector = embed.embed_texts([question])[0]
+    try:
+        hits = store.search_hybrid(question, query_vector, k=config.TOP_K_RETRIEVE)
+    except RuntimeError:
+        return True
+    if not hits:
+        return True
+    draft = synthesize_module.synthesize(question, hits)
+    result = evaluate.evaluate(draft, hits)
+    return result.faithfulness >= config.EVAL_FAITHFULNESS_THRESHOLD
+
+
 def run(
     question: str,
     sources: list[Source],
@@ -55,10 +82,18 @@ def run(
 ) -> ResearchState:
     state = ResearchState(question=question, budget=budget or Budget())
     state.sub_questions = planner.plan(question)
+    low_faithfulness_retry_used = False
 
     while not state.budget_exhausted():
         open_sqs = state.open_sub_questions()
         if not open_sqs:
+            if low_faithfulness_retry_used or not _draft_is_faithful(question, store):
+                if low_faithfulness_retry_used:
+                    break
+                low_faithfulness_retry_used = True
+                for sq in state.sub_questions:
+                    sq.status = SubQuestionStatus.OPEN
+                continue
             break
         # Инкремент — ПОСЛЕ прохода (см. ниже), не здесь: если считать проход
         # начатым уже тут, budget_exhausted() внутри for-loop триггерится тем

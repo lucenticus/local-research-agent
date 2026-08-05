@@ -43,8 +43,8 @@ def _release(model: Any, tokenizer: Any) -> None:
     mx.clear_cache()
 
 
-def _score_batch(model: Any, tokenizer: Any, query: str, texts: list[str]) -> list[float]:
-    """Прогоняет каждую (query, text) пару через модель, скор = P(yes) на последнем токене."""
+def _score_one(model: Any, tokenizer: Any, query: str, text: str) -> float:
+    """Одна (query, text) пара -> P(yes) на последнем токене промпта."""
     import mlx.core as mx
 
     hf = getattr(tokenizer, "_tokenizer", tokenizer)
@@ -53,14 +53,16 @@ def _score_batch(model: Any, tokenizer: Any, query: str, texts: list[str]) -> li
     pre = hf.encode(_PREFIX, add_special_tokens=False)
     suf = hf.encode(_SUFFIX, add_special_tokens=False)
 
-    scores: list[float] = []
-    for text in texts:
-        content = f"<Instruct>: {_INSTRUCT}\n<Query>: {query}\n<Document>: {text}"
-        ids = pre + hf.encode(content, add_special_tokens=False) + suf
-        logits = model(mx.array([ids]))[:, -1, :]
-        pair = mx.stack([logits[0, false_id], logits[0, true_id]])
-        scores.append(float(mx.exp((pair - mx.logsumexp(pair))[1])))
-    return scores
+    content = f"<Instruct>: {_INSTRUCT}\n<Query>: {query}\n<Document>: {text}"
+    ids = pre + hf.encode(content, add_special_tokens=False) + suf
+    logits = model(mx.array([ids]))[:, -1, :]
+    pair = mx.stack([logits[0, false_id], logits[0, true_id]])
+    return float(mx.exp((pair - mx.logsumexp(pair))[1]))
+
+
+def _score_batch(model: Any, tokenizer: Any, query: str, texts: list[str]) -> list[float]:
+    """Один и тот же query против нескольких текстов (retrieval-реранк)."""
+    return [_score_one(model, tokenizer, query, text) for text in texts]
 
 
 def score(query: str, candidates: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float]]:
@@ -84,3 +86,20 @@ def rerank(query: str, candidates: list[dict[str, Any]], top_n: int) -> list[dic
     """Скорит candidates по query, возвращает top_n по убыванию скора."""
     scored = sorted(score(query, candidates), key=lambda pair: pair[1], reverse=True)
     return [candidate for candidate, _ in scored[:top_n]]
+
+
+def score_pairs(pairs: list[tuple[str, str]]) -> list[float]:
+    """Скорит произвольные (query, text) пары одним load/release.
+
+    В отличие от `score()` (один query, много кандидатов), здесь у каждой
+    пары свой query — нужно для faithfulness-проверки (agent/evaluate.py):
+    у каждого утверждения в ответе свой текст, который проверяется против
+    текста именно того чанка, на который оно ссылается.
+    """
+    if not pairs:
+        return []
+    model, tokenizer = _load()
+    try:
+        return [_score_one(model, tokenizer, query, text) for query, text in pairs]
+    finally:
+        _release(model, tokenizer)

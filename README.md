@@ -2,7 +2,78 @@
 
 Локальный агент научных исследований и трендов (MacBook M4 Air, 16 ГБ, всё
 локально). Полный план и жёсткие ограничения — в
-[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) и [CLAUDE.md](CLAUDE.md).
+[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) и [CLAUDE.md](CLAUDE.md). Все 4
+милестона плана реализованы и подтверждены реальными прогонами (не только
+тестами на моках) — детали и найденные по ходу баги в
+`DEVELOPMENT_PLAN.md`.
+
+## Быстрый старт
+
+```bash
+uv venv
+uv pip install -r requirements.txt
+python -m src.cli index
+python -m src.cli ask "Что такое RAG?"
+python -m src.cli research "Какие подходы применяются для сжатия KV-cache в трансформерах?"
+uv run pytest -q
+```
+
+## Архитектура
+
+```mermaid
+flowchart TB
+    subgraph cli["cli.py"]
+        index["index"]
+        ask["ask"]
+        research["research"]
+    end
+
+    subgraph providers["providers/ (по требованию или резидентно)"]
+        embed["embed.py<br/>bge-m3 dense, резидентно"]
+        llm["llm.py<br/>Qwen3.5-4B MLX, резидентно"]
+        rerank["rerank.py<br/>Qwen3-Reranker MLX,<br/>load→score→release"]
+    end
+
+    subgraph store["store/lancedb_store.py"]
+        lance[("LanceDB<br/>dense + FTS(BM25 RU)<br/>hybrid = RRF")]
+    end
+
+    subgraph ingest["ingest/"]
+        extract["extract.py<br/>секции, drop refs/acks"]
+        chunk["chunk.py<br/>chunk_sections"]
+    end
+
+    subgraph agent["agent/ (Milestone 3-4)"]
+        state["state.py<br/>ResearchState"]
+        planner["planner.py<br/>вопрос → подвопросы"]
+        funnel["funnel.py<br/>discovery→триаж→deep read"]
+        loop["loop.py<br/>gap-оценка, budget,<br/>faithfulness-retry"]
+        synth["synthesize.py<br/>ответ + [n] цитаты"]
+        eval["evaluate.py<br/>coverage + faithfulness"]
+    end
+
+    subgraph sources["sources/ (только метаданные)"]
+        arxiv["arxiv.py"]
+        s2["semantic_scholar.py"]
+        web["web.py (опц., Tavily)"]
+    end
+
+    index --> ingest --> lance
+    index --> embed
+    ask --> embed & rerank & lance & synth
+    research --> loop
+    loop --> planner & funnel & synth & eval
+    funnel --> sources
+    funnel --> ingest
+    funnel --> lance
+    loop --> lance
+    eval --> rerank
+    synth --> llm
+```
+
+Ключевой инвариант памяти (§1 плана): `embed`/`llm` резидентны, `rerank`
+грузится и освобождается на каждый вызов — никогда две тяжёлые модели не
+держатся резидентно одновременно рядом с реранкером.
 
 ## Milestone 0 — тупой сквозной путь
 
@@ -114,6 +185,34 @@ python -m src.cli research "Какие подходы применяются д�
 подтверждено; кэш-хит на повторном вопросе подтверждён (`iterations=1`, 0
 новых `read_ids`, 0 внешних запросов); завершение по `budget` с честным
 отражением gaps в ответе подтверждено.
+
+## Milestone 4 — оценка + упаковка
+
+`agent/evaluate.py` — самопроверка сгенерированного ответа:
+
+- **Citation coverage** — доля предложений-утверждений с хотя бы одной `[n]`.
+- **Faithfulness** — доля процитированных утверждений, реально подтверждённых
+  текстом источника (проверяется через `providers/rerank.score_pairs` —
+  переиспользуем уже готовый калиброванный реранкер вместо отдельной
+  NLI-модели или ещё одного LLM-вызова).
+
+`agent/loop.py` интегрирует это: когда все подвопросы покрыты, черновой
+синтез прогоняется через `evaluate()` — при низкой faithfulness подвопросы
+переоткрываются на один дополнительный проход в пределах `budget`.
+
+```bash
+python -m src.cli index
+python -m scripts.eval_faithfulness
+```
+
+Последний прогон (2026-08-05, 8 эталонных вопросов): среднее citation
+coverage 0.59, среднее faithfulness 0.75. Два кейса, где eval поймал
+неподтверждённое утверждение — контролируемый (юнит-тест с намеренно
+выдуманным фактом) и реальный (модель честно написала мета-утверждение об
+отсутствии данных, сославшись сразу на диапазон `[1]–[5]` — eval пометил это
+unsupported, т.к. реранкер плохо валидирует отрицания против одного
+источника; подробности и попытки спровоцировать настоящую выдумку числа — в
+`DEVELOPMENT_PLAN.md`).
 
 ## Известные допущения (`ARCH-Q`)
 
