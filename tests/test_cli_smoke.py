@@ -18,7 +18,7 @@ def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
     (corpus_dir / "doc1.txt").write_text(
-        "Кит — крупное морское млекопитающее.", encoding="utf-8"
+        "Кит — крупное морское млекопитающее, живущее в океане.", encoding="utf-8"
     )
 
     # Единственный чанк в индексе -> любой вектор запроса найдёт именно его,

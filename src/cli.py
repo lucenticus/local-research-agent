@@ -8,15 +8,24 @@ from pathlib import Path
 
 from . import config
 from .agent.synthesize import synthesize
-from .ingest.chunk import chunk_text
+from .ingest.chunk import chunk_sections
+from .ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
 from .providers import embed
 from .store.lancedb_store import Chunk, LanceDBStore
+
+_SECTION_EXTRACTORS = {
+    ".txt": lambda path: extract_sections(path.read_text(encoding="utf-8")),
+    ".md": lambda path: extract_sections(path.read_text(encoding="utf-8")),
+    ".html": lambda path: extract_html_sections(path.read_text(encoding="utf-8")),
+    ".htm": lambda path: extract_html_sections(path.read_text(encoding="utf-8")),
+    ".pdf": lambda path: extract_pdf_sections(path),
+}
 
 
 def _iter_corpus_files(corpus_dir: Path):
     """Генератор путей — не держим список файлов/содержимое корпуса разом (§1)."""
     for path in sorted(corpus_dir.glob("*")):
-        if path.is_file() and path.suffix.lower() in {".txt", ".md"}:
+        if path.is_file() and path.suffix.lower() in _SECTION_EXTRACTORS:
             yield path
 
 
@@ -25,8 +34,8 @@ def cmd_index(args: argparse.Namespace) -> None:
     store = LanceDBStore()
     all_chunks: list[Chunk] = []
     for path in _iter_corpus_files(corpus_dir):
-        text = path.read_text(encoding="utf-8")
-        raw_chunks = chunk_text(text)
+        sections = _SECTION_EXTRACTORS[path.suffix.lower()](path)
+        raw_chunks = chunk_sections(sections)
         if not raw_chunks:
             continue
         vectors = embed.embed_texts([c.text for c in raw_chunks])
@@ -37,6 +46,7 @@ def cmd_index(args: argparse.Namespace) -> None:
                     text=raw.text,
                     source_id=path.name,
                     source_title=path.stem,
+                    section=raw.section,
                     vector=vector,
                 )
             )
@@ -47,7 +57,7 @@ def cmd_index(args: argparse.Namespace) -> None:
 def cmd_ask(args: argparse.Namespace) -> None:
     store = LanceDBStore()
     query_vector = embed.embed_texts([args.question])[0]
-    hits = store.search(query_vector, k=config.TOP_K_RETRIEVE)
+    hits = store.search_hybrid(args.question, query_vector, k=config.TOP_K_RETRIEVE)
     answer = synthesize(args.question, hits)
     print(answer)
     print("\nИсточники:")

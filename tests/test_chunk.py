@@ -1,6 +1,7 @@
 import pytest
 
-from src.ingest.chunk import chunk_text
+from src.ingest.chunk import chunk_sections, chunk_text
+from src.ingest.extract import Section
 
 
 def test_empty_text_returns_no_chunks():
@@ -27,3 +28,23 @@ def test_long_text_splits_with_overlap():
 def test_overlap_must_be_smaller_than_size():
     with pytest.raises(ValueError):
         chunk_text("abcdef", size=10, overlap=10)
+
+
+def test_chunk_sections_does_not_cross_section_boundary():
+    sections = [
+        Section(name="Method", category="method", text="a" * 90),
+        Section(name="Results", category="results", text="b" * 90),
+    ]
+    chunks = chunk_sections(sections, size=100, overlap=20)
+    assert [c.section for c in chunks] == ["Method", "Results"]
+    assert chunks[0].text == "a" * 90
+    assert chunks[1].text == "b" * 90
+
+
+def test_chunk_sections_reindexes_globally():
+    sections = [
+        Section(name="A", category="other", text="x" * 150),
+        Section(name="B", category="other", text="y" * 10),
+    ]
+    chunks = chunk_sections(sections, size=100, overlap=20)
+    assert [c.index for c in chunks] == list(range(len(chunks)))

@@ -1,7 +1,14 @@
-"""LanceDB-хранилище чанков: on-disk индекс + dense vector search.
+"""LanceDB-хранилище чанков: on-disk индекс, dense vector search + hybrid.
 
-Milestone 0: полный rebuild таблицы, без FTS/hybrid (см. Milestone 1) и без
+Milestone 1: добавлен FTS-индекс по тексту и гибридный поиск (dense + FTS,
+слияние через RRF — реранкер LanceDB по умолчанию, проверено на этой версии
+lancedb 0.36.0). Полный rebuild таблицы на каждой индексации, без
 инкрементального upsert (см. Milestone 3 — воронка дополняет индекс на лету).
+
+Отдельный sparse-выход bge-m3 (lexical weights) не используется: LanceDB FTS
+со стеммером `language="Russian"` уже даёт лексический сигнал на кириллице
+(проверено вручную на этой машине) — использовать оба было бы дублирующим
+сигналом без явной пользы на масштабе этого проекта.
 """
 
 from __future__ import annotations
@@ -11,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import lancedb
+from lancedb.index import FTS
 
 from .. import config
 
@@ -21,6 +29,7 @@ class Chunk:
     text: str
     source_id: str
     source_title: str
+    section: str
     vector: list[float]
 
 
@@ -51,11 +60,13 @@ class LanceDBStore:
                 "text": c.text,
                 "source_id": c.source_id,
                 "source_title": c.source_title,
+                "section": c.section,
                 "vector": c.vector,
             }
             for c in chunks
         ]
         self._table = db.create_table(self._table_name, data=rows, mode="overwrite")
+        self._table.create_index("text", config=FTS(language="Russian", stem=True))
 
     def _ensure_table(self) -> Any:
         if self._table is None:
@@ -67,6 +78,20 @@ class LanceDBStore:
             self._table = db.open_table(self._table_name)
         return self._table
 
-    def search(self, query_vector: list[float], k: int) -> list[dict[str, Any]]:
+    def search_dense(self, query_vector: list[float], k: int) -> list[dict[str, Any]]:
+        """Dense-only поиск — Milestone 0 baseline, используется для сравнения в eval."""
         table = self._ensure_table()
         return table.search(query_vector).limit(k).to_list()
+
+    def search_hybrid(
+        self, query_text: str, query_vector: list[float], k: int
+    ) -> list[dict[str, Any]]:
+        """Dense + FTS, слияние через RRF (реранкер LanceDB по умолчанию)."""
+        table = self._ensure_table()
+        return (
+            table.search(query_type="hybrid", vector_column_name="vector")
+            .vector(query_vector)
+            .text(query_text)
+            .limit(k)
+            .to_list()
+        )

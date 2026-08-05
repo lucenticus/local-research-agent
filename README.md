@@ -10,6 +10,16 @@ Single-pass RAG без цикла и воронки: `index` строит эмб
 `corpus/` в LanceDB, `ask` находит top-k чанков и просит локальную LLM
 (Qwen через MLX) ответить с цитатами `[n]`.
 
+## Milestone 1 — hybrid retrieval + чистое извлечение
+
+- `ingest/extract.py` — секция-осознанное извлечение (markdown/HTML/PDF),
+  отбрасывает References/Bibliography/Acknowledgments/Appendix.
+- `ingest/chunk.py` — `chunk_sections` режет чанки по границам секций.
+- `store/lancedb_store.py` — гибридный поиск (`search_hybrid`): dense-вектор
+  + LanceDB FTS (BM25, `language="Russian"`), слияние через RRF. `search_dense`
+  оставлен как baseline для сравнения.
+- `ask` теперь использует `search_hybrid` по умолчанию.
+
 ### Установка
 
 ```bash
@@ -24,8 +34,10 @@ python -m src.cli index
 python -m src.cli ask "Что такое RAG?"
 ```
 
-`index` читает все `.txt`/`.md` файлы из `corpus/` (в репозитории лежит
-маленький тестовый корпус из 3 заметок про RAG/векторные БД/локальные LLM).
+`index` читает `.txt`/`.md`/`.html`/`.pdf` из `corpus/` (в репозитории лежит
+маленький тестовый корпус: 3 заметки про RAG/векторные БД/локальные LLM + одна
+статья-образец с Abstract/Introduction/Method/Results/Conclusion/References/
+Acknowledgments — проверить отброс References/Acknowledgments).
 
 ### Тесты
 
@@ -35,6 +47,21 @@ uv run pytest -q
 
 Тесты офлайн: эмбеддинги и LLM мокаются, реальная загрузка Qwen3.5/bge-m3 не
 требуется для прогона тестов.
+
+### Eval retrieval@k (dense vs hybrid)
+
+Не pytest — гоняет реальные bge-m3-эмбеддинги, требует уже построенного
+индекса:
+
+```bash
+python -m src.cli index
+python -m scripts.eval_retrieval
+```
+
+Последний прогон (2026-08-05, 8 эталонных пар, k=3): dense 8/8, hybrid 8/8 —
+hybrid не хуже dense. Корпус пока мал, чтобы разница в recall проявилась, но
+ранжирование внутри top-k реально разное (проверено вручную на лексическом
+запросе про формулу RRF).
 
 ## Известные допущения (`ARCH-Q`)
 

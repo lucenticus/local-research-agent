@@ -115,13 +115,16 @@ research-agent/
 - [x] пиковая память замерена и укладывается в бюджет: реальный прогон на M4 Air 16ГБ 2026-08-04, `ask` (bge-m3 dense на MPS + Qwen3.5-4B-4bit резидентно одновременно) — **peak memory footprint ~5.92ГБ**, `index` (только эмбеддинг) — ~3.2ГБ. Оба укладываются в бюджет 16ГБ с большим запасом.
 **Не делать:** источники, реранк, цикл, воронку.
 
-### Milestone 1 — hybrid retrieval + чистое извлечение
+### Milestone 1 — hybrid retrieval + чистое извлечение ✅ (2026-08-05)
 **Цель:** ретривал стал хорошим.
 **Задачи:** `embed.py` — добавить sparse-выход bge-m3; `lancedb_store.py` — FTS-индекс + hybrid search со слиянием (RRF), `# ARCH-Q:` уточнить актуальный hybrid-API LanceDB; `ingest/extract.py` — секция-осознанное извлечение (PDF/HTML), отброс references/acks; умный чанкинг по границам секций.
+
+**Решение по sparse (закрывает ARCH-Q):** проверено вручную на lancedb 0.36.0 — нативный `table.create_index("text", config=FTS(language="Russian", stem=True))` + `table.search(query_type="hybrid").vector(...).text(...)`, дефолтный реранкер `RRFReranker`. Русский стеммер в tantivy работает корректно на кириллице (проверено). Поэтому "sparse"-сигнал реализован через LanceDB FTS/BM25, а не через отдельный sparse-выход bge-m3 (lexical weights) — держать оба было бы дублирующим сигналом без проверенной пользы на масштабе проекта; отражено в docstring `lancedb_store.py`.
+
 **Готово, когда:**
-- [ ] retriever отдаёт слитую dense+sparse выдачу
-- [ ] есть 5–10 эталонных пар (вопрос → релевантный чанк) и retrieval@k на них измерен до/после — hybrid не хуже dense
-- [ ] извлечение из статьи не содержит библиографии/благодарностей
+- [x] retriever отдаёт слитую dense+FTS выдачу (`LanceDBStore.search_hybrid`, RRF) — dense-only сохранён как `search_dense` для сравнения
+- [x] 8 эталонных пар (вопрос → source_id), `scripts/eval_retrieval.py`, реальные bge-m3-эмбеддинги. Recall@3: dense 8/8, hybrid 8/8 — hybrid не хуже dense (корпус пока мал, чтобы разница проявилась в recall; ранжирование при этом реально разное — проверено вручную на лексическом запросе, hybrid переставляет rank 2/3 против dense)
+- [x] извлечение из статьи не содержит библиографии/благодарностей — проверено на `corpus/hybrid_retrieval_paper.md` (References/Acknowledgments отсутствуют в индексе после `index`)
 **Не делать:** реранк, цикл.
 
 ### Milestone 2 — реранкер (по требованию)
