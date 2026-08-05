@@ -1,50 +1,62 @@
-"""Web-поиск через Tavily API — опциональный источник.
+"""Общий веб-поиск через локальный SearXNG (Docker, свой инстанс).
 
-# ARCH-Q: на этой машине не настроен TAVILY_API_KEY, реальный запрос ни разу
-# не проверялся вживую (в отличие от arxiv.py/semantic_scholar.py). Формат
-# ответа Tavily API взят из официальной документации, не верифицирован.
-Без ключа `discover()` возвращает пустой список и не бросает исключение —
-воронка (funnel.py) должна уметь работать при отсутствии этого источника.
+Изначально планировался Tavily API (нужен ключ). На практике проверено
+вручную 2026-08-05, что бесплатные варианты без своей инфраструктуры не
+работают: DuckDuckGo HTML блокирует автоматические запросы CAPTCHA-
+челленджем ("making sure you're not a bot"), а публичные SearXNG-инстансы
+либо жёстко rate-limit'ят (429 почти сразу), либо держат JSON API
+отключённым (публичные инстансы выключают его по умолчанию из-за абьюза).
+
+Решение — свой локальный SearXNG в Docker (`docker-compose.yml` в корне
+репозитория, `searxng/settings.yml` явно включает `formats: [html, json]`):
+без ключа, без лимитов, полностью локально. Поднять перед использованием:
+
+    docker compose up -d
+
+Без поднятого контейнера `discover()` тихо возвращает пустой список (не
+бросает исключение) — funnel.py и так переживает недоступность источника,
+воронка просто продолжает с тем, что нашли остальные источники.
 """
 
 from __future__ import annotations
 
 import json
-import os
+import urllib.error
+import urllib.parse
 import urllib.request
 
+from .. import config
 from .base import DiscoveredItem
 
-_API_URL = "https://api.tavily.com/search"
 _TIMEOUT_SECONDS = 15
 
 
 class WebSource:
     name = "web"
 
-    def __init__(self, api_key: str | None = None):
-        self._api_key = api_key or os.environ.get("TAVILY_API_KEY")
+    def __init__(self, base_url: str | None = None):
+        self._base_url = base_url or config.SEARXNG_BASE_URL
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
-        if not self._api_key:
-            return []
-        payload = json.dumps(
-            {"api_key": self._api_key, "query": query, "max_results": limit}
-        ).encode("utf-8")
+        params = urllib.parse.urlencode({"q": query, "format": "json"})
         request = urllib.request.Request(
-            _API_URL,
-            data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "local-research-agent/0.1"},
+            f"{self._base_url}/search?{params}",
+            headers={"User-Agent": "local-research-agent/0.1"},
         )
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read())
-        return list(self._parse(body))
+        try:
+            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+                body = json.loads(response.read())
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            return []  # локальный SearXNG не поднят - источник просто пуст
+        return list(self._parse(body))[:limit]
 
     def _parse(self, body: dict):
-        for i, result in enumerate(body.get("results") or []):
+        for result in body.get("results") or []:
             url = result.get("url") or ""
+            if not url:
+                continue
             yield DiscoveredItem(
-                id=f"web:{url or i}",
+                id=f"web:{url}",
                 source=self.name,
                 title=result.get("title") or "",
                 abstract=result.get("content") or "",

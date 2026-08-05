@@ -1,0 +1,15 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "local-research-agent searxng"
+
+server:
+  secret_key: "144fe7ca209e06b918ba4399e250d164eef91bba16cf4147cac76980559ad602"
+  limiter: false
+  bind_address: "0.0.0.0"
+
+search:
+  formats:
+    - html
+    - json

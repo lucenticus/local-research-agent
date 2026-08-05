@@ -74,6 +74,11 @@ FUNNEL_MIN_SOURCES_TO_COVER = 2
 # смежный, но нерелевантный локальный корпус ложно "закрывал" подвопрос.
 FUNNEL_MIN_RERANK_SCORE = 0.5
 
+# sources/web.py — локальный SearXNG (docker compose up -d, см. README).
+# Публичные инстансы/DuckDuckGo HTML не работают без ключа (проверено вручную
+# 2026-08-05: CAPTCHA у DDG, rate-limit/отключённый JSON у публичных SearXNG).
+SEARXNG_BASE_URL = "http://localhost:8888"
+
 # --- Milestone 4: самопроверка ---
 
 # Порог faithfulness (agent/evaluate.py) ниже которого loop.py считает

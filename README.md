@@ -14,7 +14,10 @@ uv venv
 uv pip install -r requirements.txt
 python -m src.cli index
 python -m src.cli ask "Что такое RAG?"
+
+docker compose up -d   # опционально: локальный веб-поиск для research (см. ниже)
 python -m src.cli research "Какие подходы применяются для сжатия KV-cache в трансформерах?"
+
 uv run pytest -q
 ```
 
@@ -55,7 +58,7 @@ flowchart TB
     subgraph sources["sources/ (только метаданные)"]
         arxiv["arxiv.py"]
         s2["semantic_scholar.py"]
-        web["web.py (опц., Tavily)"]
+        web["web.py<br/>(локальный SearXNG, Docker)"]
     end
 
     index --> ingest --> lance
@@ -163,9 +166,9 @@ python -m scripts.eval_rerank
 
 - `agent/state.py` — `ResearchState` (подвопросы, кандидаты, `read_ids`,
   findings, бюджет).
-- `sources/arxiv.py`, `sources/semantic_scholar.py` — discovery по
-  метаданным, реально работают без ключа. `sources/web.py` — опционален,
-  нужен `TAVILY_API_KEY` в env (не проверен вживую на этой машине).
+- `sources/arxiv.py`, `sources/semantic_scholar.py`, `sources/web.py` —
+  discovery по метаданным, все три реально работают без ключа (web — через
+  локальный SearXNG, см. раздел ниже).
 - `agent/planner.py` — вопрос → подвопросы (детерминированная эвристика, без
   LLM — план явно требует держать планирование в коде).
 - `agent/funnel.py` — discovery → эмбеддинг-триаж → deep read (PDF для
@@ -213,6 +216,31 @@ coverage 0.59, среднее faithfulness 0.75. Два кейса, где eval 
 unsupported, т.к. реранкер плохо валидирует отрицания против одного
 источника; подробности и попытки спровоцировать настоящую выдумку числа — в
 `DEVELOPMENT_PLAN.md`).
+
+## Общий веб-поиск (локальный SearXNG)
+
+`sources/web.py` ищет по обычным сайтам (не только научным статьям) через
+свой локальный инстанс [SearXNG](https://docs.searxng.org/) в Docker —
+без API-ключа и без лимитов запросов:
+
+```bash
+docker compose up -d          # поднять (один раз, держится в фоне)
+docker compose down           # остановить
+```
+
+Проверить, что реально работает:
+
+```bash
+curl "http://localhost:8888/search?q=test&format=json"
+```
+
+Публичные бесплатные варианты (DuckDuckGo HTML, публичные SearXNG-инстансы)
+на практике не годятся — проверено вручную, подробности в
+`DEVELOPMENT_PLAN.md` (пост-M4 раздел): DuckDuckGo блокирует запросы
+CAPTCHA-челленджем, публичные SearXNG либо `429`, либо JSON API выключен.
+Без поднятого `docker compose up -d` `WebSource.discover()` просто
+возвращает пустой список (не роняет `research` — воронка продолжает с
+arXiv/Semantic Scholar).
 
 ## Известные допущения (`ARCH-Q`)
 
