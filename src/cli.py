@@ -7,14 +7,11 @@ import uuid
 from pathlib import Path
 
 from . import config
-from .agent import loop
+from .agent.research_runner import retrieve, run_research
 from .agent.synthesize import synthesize
 from .ingest.chunk import chunk_sections
 from .ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
-from .providers import embed, rerank
-from .sources.arxiv import ArxivSource
-from .sources.semantic_scholar import SemanticScholarSource
-from .sources.web import WebSource
+from .providers import embed
 from .store.lancedb_store import Chunk, LanceDBStore
 
 _SECTION_EXTRACTORS = {
@@ -58,15 +55,6 @@ def cmd_index(args: argparse.Namespace) -> None:
     print(f"Индекс построен: {len(all_chunks)} чанков из {corpus_dir}")
 
 
-def _retrieve(store: LanceDBStore, question: str) -> list[dict]:
-    query_vector = embed.embed_texts([question])[0]
-    candidate_k = config.RERANK_CANDIDATES_K if config.RERANK_ENABLED else config.TOP_K_RETRIEVE
-    hits = store.search_hybrid(question, query_vector, k=candidate_k)
-    if config.RERANK_ENABLED:
-        hits = rerank.rerank(question, hits, top_n=config.TOP_K_RETRIEVE)
-    return hits
-
-
 def _print_answer(question: str, hits: list[dict], gaps: list[str] | None = None) -> None:
     answer = synthesize(question, hits, gaps=gaps)
     print(answer)
@@ -85,7 +73,7 @@ def _print_answer(question: str, hits: list[dict], gaps: list[str] | None = None
 
 def cmd_ask(args: argparse.Namespace) -> None:
     store = LanceDBStore()
-    hits = _retrieve(store, args.question)
+    hits = retrieve(store, args.question)
     _print_answer(args.question, hits)
 
 
@@ -94,14 +82,27 @@ def cmd_research(args: argparse.Namespace) -> None:
     внешних источников (arXiv, Semantic Scholar, web), в отличие от `ask`,
     который только ищет по уже построенному индексу."""
     store = LanceDBStore()
-    sources = [ArxivSource(), SemanticScholarSource(), WebSource()]
-    state = loop.run(args.question, sources, store)
-    hits = _retrieve(store, args.question)
-    _print_answer(args.question, hits, gaps=state.gaps)
+    result = run_research(args.question, store, on_progress=print)
+    print()
+    print(result.answer)
+    print("\nИсточники:")
+    for i, title in enumerate(result.source_titles, start=1):
+        print(f"[{i}] {title}")
+    if result.gaps:
+        print("\nНепокрытые вопросы (бюджет исследования исчерпан):")
+        for gap in result.gaps:
+            print(f"  - {gap}")
     print(
-        f"\n[итераций: {state.iterations}, прочитано источников: {len(state.read_ids)}, "
-        f"найдено кандидатов: {len(state.candidates)}]"
+        f"\n[итераций: {result.iterations}, прочитано источников: {result.read_count}, "
+        f"найдено кандидатов: {result.candidates_count}]"
     )
+
+
+def cmd_serve(args: argparse.Namespace) -> None:
+    """Веб-интерфейс (research) — FastAPI + одна HTML-страница, без сборки."""
+    import uvicorn
+
+    uvicorn.run("src.web.app:app", host=args.host, port=args.port, reload=False)
 
 
 def main() -> None:
@@ -123,6 +124,11 @@ def main() -> None:
     )
     p_research.add_argument("question")
     p_research.set_defaults(func=cmd_research)
+
+    p_serve = sub.add_parser("serve", help="Запустить веб-интерфейс (research)")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args()
     args.func(args)

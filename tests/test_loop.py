@@ -42,7 +42,7 @@ def test_loop_runs_multiple_iterations_until_covered(monkeypatch):
     def fake_is_covered(store, sq):
         return calls["funnel_run"] >= 2
 
-    def fake_funnel_run(sq, sources, state, store, discovery_limit=None):
+    def fake_funnel_run(sq, sources, state, store, discovery_limit=None, on_progress=None):
         calls["funnel_run"] += 1
 
     monkeypatch.setattr(loop, "_is_covered", fake_is_covered)
@@ -75,7 +75,7 @@ def test_loop_stops_by_budget_when_never_covered(monkeypatch):
 def test_loop_widens_discovery_limit_each_iteration(monkeypatch):
     seen_limits = []
 
-    def fake_funnel_run(sq, sources, state, store, discovery_limit=None):
+    def fake_funnel_run(sq, sources, state, store, discovery_limit=None, on_progress=None):
         seen_limits.append(discovery_limit)
 
     monkeypatch.setattr(loop, "_is_covered", lambda store, sq: False)
@@ -95,7 +95,7 @@ def test_loop_only_calls_funnel_for_still_open_subquestions(monkeypatch):
     def fake_is_covered(store, sq):
         return sq.text == "a?"  # "a?" покрыт сразу, "b?" не покрывается никогда
 
-    def fake_funnel_run(sq, sources, state, store, discovery_limit=None):
+    def fake_funnel_run(sq, sources, state, store, discovery_limit=None, on_progress=None):
         call_log.append(sq.text)
 
     monkeypatch.setattr(loop, "_is_covered", fake_is_covered)
@@ -215,3 +215,27 @@ def test_loop_does_not_reopen_when_draft_is_already_faithful(monkeypatch):
 
     assert len(faithful_calls) == 1
     assert state.iterations == 1  # без retry - сразу честный черновик
+
+
+def test_loop_reports_progress_messages(monkeypatch):
+    monkeypatch.setattr(loop, "_is_covered", lambda store, sq: True)
+    monkeypatch.setattr(loop, "_draft_is_faithful", lambda question, store: True)
+    monkeypatch.setattr(loop.funnel, "run", lambda *a, **kw: None)
+    messages = []
+
+    loop.run(
+        "question?", sources=[], store=object(),
+        budget=Budget(max_iterations=5, max_deep_reads=100, max_seconds=None),
+        on_progress=messages.append,
+    )
+
+    assert any("Подвопросов" in m for m in messages)
+    assert any("Синтезируем" in m for m in messages)
+
+
+def test_loop_without_on_progress_does_not_raise(monkeypatch):
+    monkeypatch.setattr(embed, "embed_texts", lambda texts: [[0.0]])
+    loop.run(
+        "question?", sources=[], store=_FakeStore(hits=[]),
+        budget=Budget(max_iterations=1, max_deep_reads=1, max_seconds=None),
+    )  # on_progress не передан - должен просто молчать

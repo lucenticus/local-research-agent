@@ -23,13 +23,13 @@ import tempfile
 import urllib.request
 import uuid
 from pathlib import Path
-
 from .. import config
 from ..ingest.chunk import chunk_sections, chunk_text
 from ..ingest.extract import Section, extract_pdf_sections
 from ..providers import embed, llm
 from ..sources.base import DiscoveredItem, Source
 from ..store.lancedb_store import Chunk, LanceDBStore
+from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
 
 _TRANSLATE_SYSTEM_PROMPT = (
@@ -136,6 +136,7 @@ def run(
     state: ResearchState,
     store: LanceDBStore,
     discovery_limit: int | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> None:
     """Одна итерация воронки для одного подвопроса — расширяет state и LanceDB.
 
@@ -143,9 +144,14 @@ def run(
     так повторный проход реально достаёт статьи, которых не было в первой
     (более узкой) выдаче, а не просто повторяет тот же самый запрос.
     """
+    _emit(on_progress, f"Ищем источники: «{sub_question.text}»…")
     discovered = _discover(sub_question, sources, discovery_limit or config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE)
     new_candidates = state.add_candidates(discovered)
     survivors = _triage(sub_question, new_candidates)
+    _emit(
+        on_progress,
+        f"Найдено {len(discovered)} кандидатов, {len(survivors)} прошли триаж.",
+    )
 
     for candidate in survivors:
         if state.budget_exhausted():
@@ -155,6 +161,7 @@ def run(
 
         already_indexed = store.has_source(candidate.id)
         if not already_indexed:
+            _emit(on_progress, f"Читаем: {candidate.title[:80]}…")
             sections = _deep_read_sections(candidate)
             raw_chunks = chunk_sections(sections) or chunk_text(candidate.abstract)
             if raw_chunks:
@@ -177,5 +184,7 @@ def run(
                         for c in raw_chunks
                     ]
                 )
+        else:
+            _emit(on_progress, f"Уже в индексе (кэш): {candidate.title[:80]}")
 
         state.mark_read(candidate.id)

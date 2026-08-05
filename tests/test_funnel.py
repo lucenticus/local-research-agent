@@ -171,3 +171,26 @@ def test_run_stops_deep_read_when_budget_exhausted(monkeypatch):
     funnel.run(sq, [source], state, store)
 
     assert len(state.read_ids) == 1
+
+
+def test_run_reports_progress_messages(monkeypatch):
+    _mock_embed(monkeypatch, {"cats": [1.0, 0.0]})
+    sq = SubQuestion(text="cats")
+    source = _FakeSource("s", [_item("a", "Cats paper", "all about cats")])
+    state = ResearchState(question="cats")
+    store = _FakeStore()
+    messages = []
+
+    funnel.run(sq, [source], state, store, on_progress=messages.append)
+
+    assert any("Ищем источники" in m for m in messages)
+    assert any("Найдено" in m for m in messages)
+    assert any("Cats paper" in m for m in messages)
+
+
+def test_run_without_on_progress_does_not_raise():
+    sq = SubQuestion(text="cats")
+    state = ResearchState(question="cats")
+    store = _FakeStore()
+
+    funnel.run(sq, [], state, store)  # on_progress не передан - должен просто молчать

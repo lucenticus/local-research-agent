@@ -5,4 +5,7 @@ pyarrow
 numpy
 beautifulsoup4
 pymupdf
+fastapi
+uvicorn
+httpx
 pytest

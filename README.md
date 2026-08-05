@@ -18,6 +18,8 @@ python -m src.cli ask "Что такое RAG?"
 docker compose up -d   # опционально: локальный веб-поиск для research (см. ниже)
 python -m src.cli research "Какие подходы применяются для сжатия KV-cache в трансформерах?"
 
+python -m src.cli serve   # веб-интерфейс на http://127.0.0.1:8000
+
 uv run pytest -q
 ```
 
@@ -25,10 +27,20 @@ uv run pytest -q
 
 ```mermaid
 flowchart TB
+    browser(["браузер"])
+
+    subgraph web["web/app.py (serve)"]
+        fastapi["FastAPI: job в фоновом<br/>потоке + polling"]
+    end
+
     subgraph cli["cli.py"]
         index["index"]
         ask["ask"]
         research["research"]
+    end
+
+    subgraph runner["agent/research_runner.py"]
+        rr["run_research()"]
     end
 
     subgraph providers["providers/ (по требованию или резидентно)"]
@@ -58,13 +70,18 @@ flowchart TB
     subgraph sources["sources/ (только метаданные)"]
         arxiv["arxiv.py"]
         s2["semantic_scholar.py"]
-        web["web.py<br/>(локальный SearXNG, Docker)"]
+        websearch["web.py<br/>(локальный SearXNG, Docker)"]
     end
+
+    browser <--> fastapi
+    fastapi --> rr
+    research --> rr
+    rr --> loop
+    rr --> synth
 
     index --> ingest --> lance
     index --> embed
     ask --> embed & rerank & lance & synth
-    research --> loop
     loop --> planner & funnel & synth & eval
     funnel --> sources
     funnel --> ingest
@@ -241,6 +258,26 @@ CAPTCHA-челленджем, публичные SearXNG либо `429`, либ�
 Без поднятого `docker compose up -d` `WebSource.discover()` просто
 возвращает пустой список (не роняет `research` — воронка продолжает с
 arXiv/Semantic Scholar).
+
+## Веб-интерфейс
+
+```bash
+python -m src.cli serve                    # http://127.0.0.1:8000
+python -m src.cli serve --port 8080         # другой порт
+```
+
+FastAPI + одна HTML-страница на чистом JS (без сборки, без Node/npm).
+Форма с вопросом → live-прогресс воронки (итерации, найденные кандидаты,
+что сейчас читается) → готовый ответ с цитатами `[n]`, списком источников
+и статистикой. Один research()-прогон может занимать минуты — выполняется
+в фоновом потоке, прогресс отдаётся клиенту через polling раз в секунду.
+Одновременно разрешён только один прогон (§1 плана: нельзя параллельно
+грузить несколько тяжёлых моделей на 16ГБ) — второй запрос, пока первый не
+завершён, получает `409`.
+
+Реально проверено в браузере (не только тестами): полный цикл форма → job
+→ прогресс → ответ на вопросе про сжатие KV-cache, подробности в
+`DEVELOPMENT_PLAN.md` (пост-M4 раздел).
 
 ## Известные допущения (`ARCH-Q`)
 

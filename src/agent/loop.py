@@ -33,6 +33,7 @@ from ..sources.base import Source
 from ..store.lancedb_store import LanceDBStore
 from . import evaluate, funnel, planner
 from . import synthesize as synthesize_module
+from .progress import ProgressCallback, emit as _emit
 from .state import Budget, ResearchState, SubQuestion, SubQuestionStatus
 
 
@@ -79,17 +80,22 @@ def run(
     sources: list[Source],
     store: LanceDBStore,
     budget: Budget | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> ResearchState:
     state = ResearchState(question=question, budget=budget or Budget())
     state.sub_questions = planner.plan(question)
     low_faithfulness_retry_used = False
 
+    _emit(on_progress, f"Подвопросов: {len(state.sub_questions)}.")
+
     while not state.budget_exhausted():
         open_sqs = state.open_sub_questions()
         if not open_sqs:
+            _emit(on_progress, "Все подвопросы покрыты — проверяем обоснованность черновика…")
             if low_faithfulness_retry_used or not _draft_is_faithful(question, store):
                 if low_faithfulness_retry_used:
                     break
+                _emit(on_progress, "Обоснованность низкая — собираем больше источников.")
                 low_faithfulness_retry_used = True
                 for sq in state.sub_questions:
                     sq.status = SubQuestionStatus.OPEN
@@ -100,6 +106,7 @@ def run(
         # же инкрементом и последний разрешённый проход всегда пропадает
         # вхолостую (было реальным багом, поймано тестом на моках).
         current_pass = state.iterations + 1
+        _emit(on_progress, f"Итерация {current_pass}…")
         # С каждым проходом просим у источников больше кандидатов — иначе
         # повторный discover() с тем же запросом просто повторит уже
         # известную выдачу и не найдёт ничего нового (§ критерий "агент
@@ -110,7 +117,7 @@ def run(
             if state.budget_exhausted():
                 break
             if not _is_covered(store, sq):
-                funnel.run(sq, sources, state, store, discovery_limit=discovery_limit)
+                funnel.run(sq, sources, state, store, discovery_limit=discovery_limit, on_progress=on_progress)
             if _is_covered(store, sq):
                 state.cover(sq.text)
 
@@ -120,4 +127,5 @@ def run(
     # а не накоплены по ходу (иначе позже закрытый подвопрос остался бы в
     # gaps как стухший артефакт).
     state.gaps = [sq.text for sq in state.open_sub_questions()]
+    _emit(on_progress, "Синтезируем ответ…")
     return state
