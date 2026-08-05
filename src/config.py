@@ -37,3 +37,17 @@ CHUNK_OVERLAP_CHARS = 100
 MAX_SYNTHESIS_CONTEXT_CHARS = 6000
 
 TOP_K_RETRIEVE = 5
+
+# Изначально планировался BAAI/bge-reranker-v2-m3 (FlagEmbedding), но он
+# конфликтует по версии с mlx_lm: FlagReranker вызывает
+# tokenizer.prepare_for_model, метод удалён в transformers>=5, а mlx_lm
+# (LLM-провайдер) требует transformers>=5 (TokenizersBackend) — подтверждено
+# реальным запуском на M4 Air 2026-08-05. Переключились на чистый MLX
+# реранкер: конфликта нет, т.к. в пути скоринга нет torch/transformers вовсе.
+RERANK_HF_REPO = "mlx-community/Qwen3-Reranker-0.6B-4bit"
+# Флаг для отключения реранка (§1: реранкер по требованию, не резидентно
+# рядом с LLM) — при выключении cmd_ask берёт top-k прямо из hybrid-поиска.
+RERANK_ENABLED = True
+# Сколько кандидатов из hybrid-поиска отдать реранкеру перед тем, как он
+# урежет их до TOP_K_RETRIEVE.
+RERANK_CANDIDATES_K = 10

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 
 from src import cli, config
-from src.providers import embed, llm
+from src.providers import embed, llm, rerank
 
 
 def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
@@ -26,6 +26,9 @@ def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(embed, "embed_texts", lambda texts: [[float(len(t))] for t in texts])
     monkeypatch.setattr(llm, "build_chat_prompt", lambda system, user: user)
     monkeypatch.setattr(llm, "generate", lambda prompt, **kw: "Кит — млекопитающее [1].")
+    # rerank() сам по себе покрыт tests/test_rerank.py, здесь только проверяем
+    # склейку cli -> rerank -> synthesize, поэтому мокаем на уровне публичной функции.
+    monkeypatch.setattr(rerank, "rerank", lambda query, candidates, top_n: candidates[:top_n])
 
     cli.cmd_index(argparse.Namespace(corpus_dir=str(corpus_dir)))
     index_out = capsys.readouterr().out

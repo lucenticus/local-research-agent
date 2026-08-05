@@ -63,6 +63,27 @@ hybrid не хуже dense. Корпус пока мал, чтобы разни�
 ранжирование внутри top-k реально разное (проверено вручную на лексическом
 запросе про формулу RRF).
 
+## Milestone 2 — реранкер по требованию
+
+`providers/rerank.py` — `mlx-community/Qwen3-Reranker-0.6B-4bit` (чистый MLX,
+331MB): `cmd_ask` берёт `RERANK_CANDIDATES_K` кандидатов из hybrid-поиска,
+реранкер грузится, скорит, освобождается, отдаёт top-`TOP_K_RETRIEVE`.
+Отключается флагом `config.RERANK_ENABLED = False`.
+
+Изначально планировался `BAAI/bge-reranker-v2-m3` (FlagEmbedding/torch), но он
+конфликтует по версии `transformers` с `mlx_lm` (LLM-провайдер) — подробности
+в `DEVELOPMENT_PLAN.md`.
+
+```bash
+python -m src.cli index
+python -m scripts.eval_rerank
+```
+
+Последний прогон (2026-08-05): hit@1 hybrid 8/8, +rerank 8/8 — на этом
+корпусе реранк не деградирует hybrid. Замер памяти (`mlx.core`):
+`active_memory`/`cache_memory` 0 → 335MB/360MB во время скоринга → 0/0 после
+`_release()` — модель реально не резидентна между вызовами.
+
 ## Известные допущения (`ARCH-Q`)
 
 Непроверенные на реальном железе допущения помечены `# ARCH-Q:` прямо в коде

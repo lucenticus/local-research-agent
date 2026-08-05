@@ -10,7 +10,7 @@ from . import config
 from .agent.synthesize import synthesize
 from .ingest.chunk import chunk_sections
 from .ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
-from .providers import embed
+from .providers import embed, rerank
 from .store.lancedb_store import Chunk, LanceDBStore
 
 _SECTION_EXTRACTORS = {
@@ -57,7 +57,10 @@ def cmd_index(args: argparse.Namespace) -> None:
 def cmd_ask(args: argparse.Namespace) -> None:
     store = LanceDBStore()
     query_vector = embed.embed_texts([args.question])[0]
-    hits = store.search_hybrid(args.question, query_vector, k=config.TOP_K_RETRIEVE)
+    candidate_k = config.RERANK_CANDIDATES_K if config.RERANK_ENABLED else config.TOP_K_RETRIEVE
+    hits = store.search_hybrid(args.question, query_vector, k=candidate_k)
+    if config.RERANK_ENABLED:
+        hits = rerank.rerank(args.question, hits, top_n=config.TOP_K_RETRIEVE)
     answer = synthesize(args.question, hits)
     print(answer)
     print("\nИсточники:")
