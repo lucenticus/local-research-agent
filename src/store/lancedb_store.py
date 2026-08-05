@@ -68,6 +68,43 @@ class LanceDBStore:
         self._table = db.create_table(self._table_name, data=rows, mode="overwrite")
         self._table.create_index("text", config=FTS(language="Russian", stem=True))
 
+    def add_chunks(self, chunks: list[Chunk]) -> None:
+        """Инкрементально дописывает chunks (создаёт таблицу, если её ещё нет).
+
+        Используется воронкой (agent/funnel.py) — прочитанное пополняет индекс
+        на лету, без полной пересборки (в отличие от `rebuild`, который зовёт
+        только `cli.py index` для локального корпуса).
+        """
+        if not chunks:
+            return
+        db = self._connect()
+        rows = [
+            {
+                "id": c.id,
+                "text": c.text,
+                "source_id": c.source_id,
+                "source_title": c.source_title,
+                "section": c.section,
+                "vector": c.vector,
+            }
+            for c in chunks
+        ]
+        if self._table_name in db.list_tables().tables:
+            table = self._ensure_table()
+            table.add(rows)
+        else:
+            self._table = db.create_table(self._table_name, data=rows, mode="overwrite")
+        self._table.create_index("text", config=FTS(language="Russian", stem=True), replace=True)
+
+    def has_source(self, source_id: str) -> bool:
+        """Есть ли уже чанки с этим source_id — кэш-хит для funnel (не читать повторно)."""
+        db = self._connect()
+        if self._table_name not in db.list_tables().tables:
+            return False
+        table = self._ensure_table()
+        escaped = source_id.replace("'", "''")
+        return table.count_rows(filter=f"source_id = '{escaped}'") > 0
+
     def _ensure_table(self) -> Any:
         if self._table is None:
             db = self._connect()

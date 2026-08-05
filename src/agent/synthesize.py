@@ -1,8 +1,10 @@
 """Single-pass синтез: найденные чанки -> ответ с цитатами [n].
 
-Milestone 0: без итеративного цикла и gap-оценки (см. Milestone 3) — один
-вызов LLM на переиспользуемом провайдере (§1: не инстанцировать модель
-повторно).
+Один вызов LLM на переиспользуемом провайдере (§1: не инстанцировать модель
+повторно). `gaps` (Milestone 3, agent/loop.py) — подвопросы, не закрытые до
+исчерпания бюджета: честно передаём их модели, чтобы ответ отражал реальные
+пробелы, а не делал вид, что покрыто всё (§5: "цикл обязан завершаться по
+budget... тогда честно сказать в ответе").
 """
 
 from __future__ import annotations
@@ -33,8 +35,16 @@ def _format_context(chunks: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def synthesize(question: str, chunks: list[dict[str, Any]]) -> str:
+def synthesize(question: str, chunks: list[dict[str, Any]], gaps: list[str] | None = None) -> str:
     context = _format_context(chunks)
     user_message = f"Контекст:\n{context}\n\nВопрос: {question}"
+    if gaps:
+        gaps_text = "\n".join(f"- {g}" for g in gaps)
+        user_message += (
+            "\n\nВАЖНО: бюджет исследования исчерпан, следующие подвопросы "
+            f"остались непокрытыми (найденных источников недостаточно):\n{gaps_text}\n"
+            "Ответь на основе того, что есть в контексте, и явно укажи, какая "
+            "часть вопроса осталась без достаточного подтверждения."
+        )
     prompt = llm.build_chat_prompt(SYSTEM_PROMPT, user_message)
     return llm.generate(prompt)

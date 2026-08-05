@@ -7,10 +7,14 @@ import uuid
 from pathlib import Path
 
 from . import config
+from .agent import loop
 from .agent.synthesize import synthesize
 from .ingest.chunk import chunk_sections
 from .ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
 from .providers import embed, rerank
+from .sources.arxiv import ArxivSource
+from .sources.semantic_scholar import SemanticScholarSource
+from .sources.web import WebSource
 from .store.lancedb_store import Chunk, LanceDBStore
 
 _SECTION_EXTRACTORS = {
@@ -54,14 +58,17 @@ def cmd_index(args: argparse.Namespace) -> None:
     print(f"Индекс построен: {len(all_chunks)} чанков из {corpus_dir}")
 
 
-def cmd_ask(args: argparse.Namespace) -> None:
-    store = LanceDBStore()
-    query_vector = embed.embed_texts([args.question])[0]
+def _retrieve(store: LanceDBStore, question: str) -> list[dict]:
+    query_vector = embed.embed_texts([question])[0]
     candidate_k = config.RERANK_CANDIDATES_K if config.RERANK_ENABLED else config.TOP_K_RETRIEVE
-    hits = store.search_hybrid(args.question, query_vector, k=candidate_k)
+    hits = store.search_hybrid(question, query_vector, k=candidate_k)
     if config.RERANK_ENABLED:
-        hits = rerank.rerank(args.question, hits, top_n=config.TOP_K_RETRIEVE)
-    answer = synthesize(args.question, hits)
+        hits = rerank.rerank(question, hits, top_n=config.TOP_K_RETRIEVE)
+    return hits
+
+
+def _print_answer(question: str, hits: list[dict], gaps: list[str] | None = None) -> None:
+    answer = synthesize(question, hits, gaps=gaps)
     print(answer)
     print("\nИсточники:")
     seen: set[str] = set()
@@ -70,6 +77,31 @@ def cmd_ask(args: argparse.Namespace) -> None:
         if title not in seen:
             print(f"[{i}] {title}")
             seen.add(title)
+    if gaps:
+        print("\nНепокрытые вопросы (бюджет исследования исчерпан):")
+        for gap in gaps:
+            print(f"  - {gap}")
+
+
+def cmd_ask(args: argparse.Namespace) -> None:
+    store = LanceDBStore()
+    hits = _retrieve(store, args.question)
+    _print_answer(args.question, hits)
+
+
+def cmd_research(args: argparse.Namespace) -> None:
+    """Deep-research режим (Milestone 3): воронка + итеративный цикл поверх
+    внешних источников (arXiv, Semantic Scholar, web), в отличие от `ask`,
+    который только ищет по уже построенному индексу."""
+    store = LanceDBStore()
+    sources = [ArxivSource(), SemanticScholarSource(), WebSource()]
+    state = loop.run(args.question, sources, store)
+    hits = _retrieve(store, args.question)
+    _print_answer(args.question, hits, gaps=state.gaps)
+    print(
+        f"\n[итераций: {state.iterations}, прочитано источников: {len(state.read_ids)}, "
+        f"найдено кандидатов: {len(state.candidates)}]"
+    )
 
 
 def main() -> None:
@@ -85,6 +117,12 @@ def main() -> None:
     p_ask = sub.add_parser("ask", help="Задать вопрос по индексу")
     p_ask.add_argument("question")
     p_ask.set_defaults(func=cmd_ask)
+
+    p_research = sub.add_parser(
+        "research", help="Deep-research: воронка + итеративный цикл поверх внешних источников"
+    )
+    p_research.add_argument("question")
+    p_research.set_defaults(func=cmd_research)
 
     args = parser.parse_args()
     args.func(args)

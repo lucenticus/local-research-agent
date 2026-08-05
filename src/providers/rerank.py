@@ -63,10 +63,12 @@ def _score_batch(model: Any, tokenizer: Any, query: str, texts: list[str]) -> li
     return scores
 
 
-def rerank(query: str, candidates: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
-    """Скорит candidates по query, возвращает top_n по убыванию скора.
+def score(query: str, candidates: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float]]:
+    """Скорит candidates по query, возвращает (candidate, score) в исходном порядке.
 
-    Модель грузится и освобождается в пределах одного вызова (§1).
+    Модель грузится и освобождается в пределах одного вызова (§1). Используется
+    и `rerank()` (сортировка + top_n), и agent/loop.py (gap-оценка по порогу
+    score, без сортировки/обрезки).
     """
     if not candidates:
         return []
@@ -75,6 +77,10 @@ def rerank(query: str, candidates: list[dict[str, Any]], top_n: int) -> list[dic
         scores = _score_batch(model, tokenizer, query, [c["text"] for c in candidates])
     finally:
         _release(model, tokenizer)
+    return list(zip(candidates, scores, strict=True))
 
-    scored = sorted(zip(candidates, scores, strict=True), key=lambda pair: pair[1], reverse=True)
+
+def rerank(query: str, candidates: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
+    """Скорит candidates по query, возвращает top_n по убыванию скора."""
+    scored = sorted(score(query, candidates), key=lambda pair: pair[1], reverse=True)
     return [candidate for candidate, _ in scored[:top_n]]
