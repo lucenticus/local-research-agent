@@ -66,6 +66,17 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
                 {"title": s.title, "url": s.url, "citation_count": s.citation_count}
                 for s in job.result.sources
             ],
+            "candidates": [
+                {
+                    "title": c.title,
+                    "source": c.source,
+                    "url": c.url,
+                    "citation_count": c.citation_count,
+                    "triage_score": c.triage_score,
+                    "read": c.read,
+                }
+                for c in job.result.candidates
+            ],
             "gaps": job.result.gaps,
             "iterations": job.result.iterations,
             "read_count": job.result.read_count,

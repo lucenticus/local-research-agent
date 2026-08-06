@@ -29,9 +29,25 @@ class SourceRef:
 
 
 @dataclass
+class CandidateSummary:
+    """Кандидат, найденный воронкой (не обязательно процитирован в ответе) —
+    показывает, КАК агент сузил поиск: все найденные, score триажа, кто
+    реально был прочитан. Отдельно от `SourceRef` (только процитированное в
+    финальном ответе)."""
+
+    title: str
+    source: str
+    url: str = ""
+    citation_count: int | None = None
+    triage_score: float | None = None
+    read: bool = False
+
+
+@dataclass
 class ResearchResult:
     answer: str
     sources: list[SourceRef]
+    candidates: list[CandidateSummary]
     gaps: list[str]
     iterations: int
     read_count: int
@@ -84,6 +100,24 @@ def _unique_sources(hits: list[dict[str, Any]]) -> list[SourceRef]:
     return refs
 
 
+def _candidate_summaries(state) -> list[CandidateSummary]:
+    """Все найденные кандидаты, отсортированы по score триажа (лучшие
+    сверху) — это и есть видимый след "как агент сузил поиск"."""
+    summaries = [
+        CandidateSummary(
+            title=c.title,
+            source=c.source,
+            url=c.meta.get("url") or "",
+            citation_count=c.meta.get("citation_count"),
+            triage_score=c.triage_score,
+            read=c.id in state.read_ids,
+        )
+        for c in state.candidates
+    ]
+    summaries.sort(key=lambda c: (c.triage_score is not None, c.triage_score or 0.0), reverse=True)
+    return summaries
+
+
 def run_research(
     question: str,
     store: LanceDBStore,
@@ -96,6 +130,7 @@ def run_research(
     return ResearchResult(
         answer=answer,
         sources=_unique_sources(hits),
+        candidates=_candidate_summaries(state),
         gaps=state.gaps,
         iterations=state.iterations,
         read_count=len(state.read_ids),

@@ -117,6 +117,15 @@ def cmd_research(args: argparse.Namespace) -> None:
     for i, source in enumerate(result.sources, start=1):
         print(_format_source_line(i, source.title, url=source.url, citation_count=source.citation_count))
     _print_gaps(result.gaps)
+
+    if result.candidates:
+        print("\nВсе найденные кандидаты (как агент сузил поиск):")
+        for c in result.candidates:
+            mark = "✓ прочитан" if c.read else "  найден"
+            score = f"score={c.triage_score:.3f}" if c.triage_score is not None else "score=—"
+            citation = f", цитирований={c.citation_count}" if c.citation_count is not None else ""
+            print(f"  [{mark}] {score}{citation} ({c.source}) {c.title}")
+
     print(
         f"\n[итераций: {result.iterations}, прочитано источников: {result.read_count}, "
         f"найдено кандидатов: {result.candidates_count}]"

@@ -10,7 +10,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from src.agent.research_runner import ResearchResult, SourceRef
+from src.agent.research_runner import CandidateSummary, ResearchResult, SourceRef
 from src.web import app as app_module
 
 
@@ -61,6 +61,13 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
         return ResearchResult(
             answer="Кит — млекопитающее [1].",
             sources=[SourceRef(title="whales.md", url="https://example.com/whales", citation_count=7)],
+            candidates=[
+                CandidateSummary(
+                    title="whales.md", source="web", url="https://example.com/whales",
+                    citation_count=7, triage_score=0.87, read=True,
+                ),
+                CandidateSummary(title="unrelated paper", source="arxiv", read=False),
+            ],
             gaps=[],
             iterations=1,
             read_count=1,
@@ -82,6 +89,16 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
     assert data["result"]["sources"] == [
         {"title": "whales.md", "url": "https://example.com/whales", "citation_count": 7}
     ]
+    assert data["result"]["candidates"] == [
+        {
+            "title": "whales.md", "source": "web", "url": "https://example.com/whales",
+            "citation_count": 7, "triage_score": 0.87, "read": True,
+        },
+        {
+            "title": "unrelated paper", "source": "arxiv", "url": "",
+            "citation_count": None, "triage_score": None, "read": False,
+        },
+    ]
     assert data["result"]["iterations"] == 1
 
 
@@ -95,7 +112,8 @@ def test_concurrent_job_is_rejected_with_409(monkeypatch):
         started.set()
         release.wait(timeout=5.0)
         return ResearchResult(
-            answer="ok", sources=[], gaps=[], iterations=1, read_count=0, candidates_count=0
+            answer="ok", sources=[], candidates=[], gaps=[], iterations=1, read_count=0,
+            candidates_count=0,
         )
 
     monkeypatch.setattr(app_module, "run_research", fake_run_research)

@@ -139,6 +139,34 @@
   #sources a { color: var(--accent); text-decoration: none; }
   #sources a:hover { text-decoration: underline; }
   .citation-badge { color: var(--muted); font-size: 12px; }
+  #candidates-panel summary {
+    cursor: pointer;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  #candidates-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+  #candidates-table th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 400;
+    padding: 4px 8px 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  #candidates-table td {
+    padding: 5px 8px 5px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  #candidates-table a { color: var(--accent); text-decoration: none; }
+  #candidates-table a:hover { text-decoration: underline; }
+  .read-mark { color: #22c55e; }
   #stats { color: var(--muted); font-size: 13px; margin-top: 12px; }
   .gaps {
     background: var(--warn-bg);
@@ -186,6 +214,16 @@
     <ol id="sources"></ol>
     <div id="stats"></div>
   </div>
+
+  <details id="candidates-panel" class="panel hidden">
+    <summary id="candidates-summary">Все найденные кандидаты</summary>
+    <table id="candidates-table">
+      <thead>
+        <tr><th></th><th>score</th><th>цитирований</th><th>источник</th><th>заголовок</th></tr>
+      </thead>
+      <tbody id="candidates-body"></tbody>
+    </table>
+  </details>
 </div>
 
 <script>
@@ -201,6 +239,9 @@ const answerEl = document.getElementById("answer");
 const sourcesEl = document.getElementById("sources");
 const statsEl = document.getElementById("stats");
 const gapsWrap = document.getElementById("gaps-wrap");
+const candidatesPanel = document.getElementById("candidates-panel");
+const candidatesSummary = document.getElementById("candidates-summary");
+const candidatesBody = document.getElementById("candidates-body");
 
 let pollTimer = null;
 
@@ -208,8 +249,10 @@ function resetUI() {
   progressPanel.classList.remove("hidden");
   errorPanel.classList.add("hidden");
   resultPanel.classList.add("hidden");
+  candidatesPanel.classList.add("hidden");
   progressList.innerHTML = "";
   gapsWrap.innerHTML = "";
+  candidatesBody.innerHTML = "";
 }
 
 function renderProgress(messages, running) {
@@ -229,7 +272,9 @@ function renderProgress(messages, running) {
 }
 
 function renderResult(result) {
-  progressPanel.classList.add("hidden");
+  // Панель прогресса НЕ скрываем - это единственный видимый след того, как
+  // агент искал и сужал круг источников, полезно посмотреть и после того,
+  // как ответ уже готов (см. обсуждение с пользователем 2026-08-06).
   resultPanel.classList.remove("hidden");
   answerEl.textContent = result.answer;
 
@@ -273,6 +318,55 @@ function renderResult(result) {
   statsEl.textContent =
     `Итераций: ${result.iterations} · прочитано источников: ${result.read_count} · ` +
     `найдено кандидатов: ${result.candidates_count}`;
+
+  renderCandidates(result.candidates || []);
+}
+
+function renderCandidates(candidates) {
+  candidatesBody.innerHTML = "";
+  if (candidates.length === 0) {
+    candidatesPanel.classList.add("hidden");
+    return;
+  }
+  candidatesSummary.textContent = `Все найденные кандидаты (${candidates.length}) — как агент сузил поиск`;
+  candidates.forEach((c) => {
+    const tr = document.createElement("tr");
+
+    const markTd = document.createElement("td");
+    markTd.textContent = c.read ? "✓" : "";
+    markTd.className = "read-mark";
+    tr.appendChild(markTd);
+
+    const scoreTd = document.createElement("td");
+    scoreTd.textContent = c.triage_score !== null && c.triage_score !== undefined
+      ? c.triage_score.toFixed(3) : "—";
+    tr.appendChild(scoreTd);
+
+    const citationTd = document.createElement("td");
+    citationTd.textContent = c.citation_count !== null && c.citation_count !== undefined
+      ? c.citation_count : "—";
+    tr.appendChild(citationTd);
+
+    const sourceTd = document.createElement("td");
+    sourceTd.textContent = c.source;
+    tr.appendChild(sourceTd);
+
+    const titleTd = document.createElement("td");
+    if (c.url) {
+      const a = document.createElement("a");
+      a.href = c.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = c.title;
+      titleTd.appendChild(a);
+    } else {
+      titleTd.textContent = c.title;
+    }
+    tr.appendChild(titleTd);
+
+    candidatesBody.appendChild(tr);
+  });
+  candidatesPanel.classList.remove("hidden");
 }
 
 function renderError(message) {
