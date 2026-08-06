@@ -169,7 +169,15 @@ def test_is_covered_counts_only_distinct_sources_above_threshold(monkeypatch):
 
 
 def test_loop_reopens_once_when_draft_is_not_faithful(monkeypatch):
+    """Реальный баг, найден на живом прогоне 2026-08-06: retry по низкой
+    faithfulness переоткрывал подвопросы, но _is_covered() снова смотрел в
+    тот же (уже "покрытый" старыми чанками) индекс и мгновенно закрывал
+    подвопрос заново - funnel.run() ни разу не вызывался, retry был
+    пустышкой. force_discovery должен заставить funnel.run() реально
+    вызваться на проходе сразу после retry, даже если _is_covered() всё ещё
+    считает подвопрос покрытым."""
     faithful_calls = []
+    funnel_run_calls = []
 
     def fake_draft_is_faithful(question, store):
         faithful_calls.append(1)
@@ -177,9 +185,10 @@ def test_loop_reopens_once_when_draft_is_not_faithful(monkeypatch):
 
     monkeypatch.setattr(loop, "_is_covered", lambda store, sq: True)
     monkeypatch.setattr(loop, "_draft_is_faithful", fake_draft_is_faithful)
-    monkeypatch.setattr(loop.funnel, "run", lambda *a, **kw: (_ for _ in ()).throw(
-        AssertionError("funnel.run не должен вызываться - подвопрос уже covered")
-    ))
+    monkeypatch.setattr(
+        loop.funnel, "run",
+        lambda sq, sources, state, store, discovery_limit=None, on_progress=None: funnel_run_calls.append(sq),
+    )
 
     state = loop.run(
         "question?", sources=[], store=object(),
@@ -190,6 +199,9 @@ def test_loop_reopens_once_when_draft_is_not_faithful(monkeypatch):
     # цикл завершается независимо от результата ВТОРОЙ проверки (её вообще
     # не будет - именно это здесь и проверяется).
     assert len(faithful_calls) == 1
+    # А funnel.run ДОЛЖЕН быть вызван ровно один раз - на форсированном
+    # проходе сразу после retry (баг был именно в том, что этого не происходило).
+    assert len(funnel_run_calls) == 1
     assert state.iterations == 2  # исходный проход + один retry-проход
     assert state.open_sub_questions() == []
     assert state.gaps == []

@@ -85,6 +85,15 @@ def run(
     state = ResearchState(question=question, budget=budget or Budget())
     state.sub_questions = planner.plan(question)
     low_faithfulness_retry_used = False
+    # Реальный баг, найден на живом прогоне 2026-08-06: retry по низкой
+    # faithfulness переоткрывал подвопросы, но _is_covered() тут же снова
+    # смотрел в тот же персистентный индекс, видел тот же проходной score от
+    # СТАРЫХ (нерелевантных по сути, но формально прошедших порог) чанков из
+    # предыдущих несвязанных запросов и мгновенно "закрывал" подвопрос заново
+    # — funnel.run() при этом ни разу не вызывался, retry был пустышкой.
+    # force_discovery=True на один проход сразу после retry обходит
+    # _is_covered() и гарантирует реальную попытку нового discovery.
+    force_discovery = False
 
     _emit(on_progress, f"Подвопросов: {len(state.sub_questions)}.")
 
@@ -97,6 +106,7 @@ def run(
                     break
                 _emit(on_progress, "Обоснованность низкая — собираем больше источников.")
                 low_faithfulness_retry_used = True
+                force_discovery = True
                 for sq in state.sub_questions:
                     sq.status = SubQuestionStatus.OPEN
                 continue
@@ -116,11 +126,12 @@ def run(
         for sq in open_sqs:
             if state.budget_exhausted():
                 break
-            if not _is_covered(store, sq):
+            if force_discovery or not _is_covered(store, sq):
                 funnel.run(sq, sources, state, store, discovery_limit=discovery_limit, on_progress=on_progress)
             if _is_covered(store, sq):
                 state.cover(sq.text)
 
+        force_discovery = False  # только на один проход сразу после retry
         state.iterations += 1
 
     # Итоговые пробелы — детерминированно из финального статуса подвопросов,
