@@ -1,40 +1,65 @@
 # CLAUDE.md — research-agent
 
-Локальный deep-research агент: arXiv / Semantic Scholar / web → итеративный поиск → синтез с цитатами и самопроверкой. Работает целиком локально на MacBook M4 Air, 16 ГБ.
+A local deep-research agent: arXiv / Semantic Scholar / web → iterative
+search → synthesis with citations and self-verification. Runs entirely
+locally on a MacBook M4 Air, 16GB.
 
-**Источник истины по объёму работ:** `DEVELOPMENT_PLAN.md` — милестоны, задачи, критерии готовности там. Этот файл — постоянные правила, действующие всегда.
+**Source of truth for scope:** `DEVELOPMENT_PLAN.md` — milestones, tasks,
+and acceptance criteria live there. This file holds the standing rules
+that always apply.
 
-## Как работать
-- **Один милестон за запуск.** Реализовал → стоп → покажи diff и как запустить → жди ревью. Не забегать в следующий милестон.
-- **Критерий закрытия.** Милестон готов, только когда все чекбоксы его секции в плане выполнены и проверены, а не «вроде работает».
-- **`# ARCH-Q:` вместо догадок.** Любое допущение, непроверяемое без железа (устройство MPS, вызов загрузки MLX, hybrid-API LanceDB, пики памяти), — помечать этим маркером, не угадывать молча.
-- Мелкие коммиты по задачам. Тайп-хинты и докстринги на публичных функциях.
+## How to work
+- **One milestone per run.** Implement → stop → show the diff and how to
+  run it → wait for review. Don't get ahead into the next milestone.
+- **Definition of done.** A milestone is done only when every checkbox in
+  its plan section is met and verified — not "seems to work".
+- **`# ARCH-Q:` instead of guessing.** Any assumption that can't be
+  verified without the real hardware (MPS device, MLX load call, LanceDB
+  hybrid API, memory peaks) — mark it with this tag, don't silently guess.
+- Small commits per task. Type hints and docstrings on public functions.
 
-## Жёсткие ограничения памяти (16 ГБ — не нарушать)
-- **Один резидентный инстанс LLM на процесс.** Своя копия Qwen3.5, грузится один раз через MLX. Не инстанцировать модель дважды (напр. в синтезе и в gap-check) — переиспользовать инстанс.
-- **Реранкер — по требованию.** Грузить → скорить → освобождать. Никогда не резидентно рядом с LLM.
-- **Двух резидентных моделей одновременно не держать.**
-- **Контекст синтеза под жёстким лимитом** (в config). Длинный контекст раздувает KV-cache — главный риск OOM.
-- **Не индексировать всё.** Извлечение — прогрессивной воронкой (discovery → триаж → deep read). Полный текст и эмбеддинг только для прошедших триаж.
-- **Корпус — генераторами.** Не держать все документы в памяти разом.
-- Эмбеддинги: MPS с фолбэком на CPU под давлением. `# ARCH-Q:` проверить на устройстве.
+## Hard memory constraints (16GB — do not violate)
+- **One resident LLM instance per process.** Its own copy of Qwen3.5,
+  loaded once via MLX. Never instantiate the model twice (e.g. in
+  synthesis and in gap-check) — reuse the instance.
+- **Reranker — on demand.** Load → score → release. Never resident next to
+  the LLM.
+- **Never hold two resident models at once.**
+- **Synthesis context under a hard cap** (in config). Long context
+  inflates the KV-cache — the main OOM risk.
+- **Don't index everything.** Extraction is a progressive funnel
+  (discovery → triage → deep read). Full text and embedding only for what
+  passed triage.
+- **Corpus via generators.** Never hold all documents in memory at once.
+- Embeddings: MPS with a CPU fallback under pressure. `# ARCH-Q:` verify
+  on-device.
 
-## Архитектура кода
-- **Провайдер-швы.** Внешние зависимости (LLM, embed, rerank, источники) — за тонкими интерфейсами в `src/providers/` и `src/sources/`. Логика агента не вызывает SDK напрямую.
-- **Единый `ResearchState`** — планировщик, воронка, цикл, синтезатор читают и пишут его. Инварианты: не читать один id дважды; цикл всегда завершается по budget.
-- **Управление в коде, не в модели.** Планировщик и gap-оценка — детерминированный код (4B плохо держит многошаговое мета-рассуждение). LLM работает только на синтезе (+ опционально bounded gap-check).
+## Code architecture
+- **Provider seams.** External dependencies (LLM, embed, rerank, sources)
+  live behind thin interfaces in `src/providers/` and `src/sources/`.
+  Agent logic never calls an SDK directly.
+- **A single `ResearchState`** — the planner, funnel, loop, and
+  synthesizer all read and write it. Invariants: never read one id twice;
+  the loop always terminates on budget.
+- **Control lives in code, not in the model.** The planner and gap-check
+  are deterministic code (a 4B model handles multi-step meta-reasoning
+  poorly). The LLM is only used for synthesis (+ optionally a bounded
+  gap-check).
 
-## Тесты
-- Офлайн и быстрые: LLM/эмбеддинги мокать.
-- Юнит: чанкинг, переходы `ResearchState`, дедуп `read_ids`, стоп по budget, слияние hybrid.
-- Один интеграционный smoke end-to-end на крошечном корпусе.
-- Прогонять перед закрытием милестона.
+## Tests
+- Offline and fast: mock the LLM/embeddings.
+- Unit: chunking, `ResearchState` transitions, `read_ids` dedup, budget
+  stop, hybrid merge.
+- One end-to-end integration smoke test on a tiny corpus.
+- Run before closing out a milestone.
 
-## Стек
-Qwen3.5-4B (Q4, MLX, своя копия) · bge-m3 (dense+sparse) · bge-reranker-v2-m3 (по требованию) · LanceDB (встроенное) · arXiv / Semantic Scholar / web.
+## Stack
+Qwen3.5-4B (Q4, MLX, own copy) · bge-m3 (dense+sparse) ·
+bge-reranker-v2-m3 (on demand) · LanceDB (embedded) · arXiv / Semantic
+Scholar / web.
 
-## Запуск
+## Running it
 ```
-python -m src.cli index          # построить индекс из corpus/
-python -m src.cli ask "вопрос"   # спросить
+python -m src.cli index          # build the index from corpus/
+python -m src.cli ask "question"  # ask
 ```

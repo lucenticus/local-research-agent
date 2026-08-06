@@ -1,36 +1,41 @@
 # local-research-agent
 
-Локальный агент научных исследований и трендов (MacBook M4 Air, 16 ГБ, всё
-локально). Полный план и жёсткие ограничения — в
-[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) и [CLAUDE.md](CLAUDE.md). Все 4
-милестона плана реализованы и подтверждены реальными прогонами (не только
-тестами на моках) — детали и найденные по ходу баги в
-`DEVELOPMENT_PLAN.md`.
+A local deep-research agent that runs entirely on-device (MacBook M4 Air,
+16GB, MLX). It searches arXiv, Semantic Scholar, and the general web
+(Tavily or a local SearXNG instance), reads and cites what it finds, and
+self-checks its own answers before returning them.
 
-## Быстрый старт
+The full build history, every real bug found along the way, and the
+hardware assumptions behind each design choice live in
+[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) and [CLAUDE.md](CLAUDE.md). This
+file describes the system as it stands today.
+
+## Quickstart
 
 ```bash
 uv venv
 uv pip install -r requirements.txt
+
 python -m src.cli index
-python -m src.cli ask "Что такое RAG?"
+python -m src.cli ask "What is RAG?"
 
-docker compose up -d   # опционально: локальный веб-поиск для research (см. ниже)
-python -m src.cli research "Какие подходы применяются для сжатия KV-cache в трансформерах?"
+cp .env.example .env   # optional: add TAVILY_API_KEY for broader web search
+docker compose up -d   # optional: local SearXNG fallback if no Tavily key
+python -m src.cli research "What approaches exist for KV-cache compression in transformers?"
 
-python -m src.cli serve   # веб-интерфейс на http://127.0.0.1:8000
+python -m src.cli serve   # web UI at http://127.0.0.1:8000
 
 uv run pytest -q
 ```
 
-## Архитектура
+## Architecture
 
 ```mermaid
 flowchart TB
-    browser(["браузер"])
+    browser(["browser"])
 
     subgraph web["web/app.py (serve)"]
-        fastapi["FastAPI: job в фоновом<br/>потоке + polling"]
+        fastapi["FastAPI: background job<br/>+ polling"]
     end
 
     subgraph cli["cli.py"]
@@ -43,34 +48,34 @@ flowchart TB
         rr["run_research()"]
     end
 
-    subgraph providers["providers/ (по требованию или резидентно)"]
-        embed["embed.py<br/>bge-m3 dense, резидентно"]
-        llm["llm.py<br/>Qwen3.5-4B MLX, резидентно"]
+    subgraph providers["providers/ (resident or on-demand)"]
+        embed["embed.py<br/>bge-m3 dense, resident"]
+        llm["llm.py<br/>Qwen3.5-4B MLX, resident"]
         rerank["rerank.py<br/>Qwen3-Reranker MLX,<br/>load→score→release"]
     end
 
     subgraph store["store/lancedb_store.py"]
-        lance[("LanceDB<br/>dense + FTS(BM25 RU)<br/>hybrid = RRF")]
+        lance[("LanceDB<br/>dense + FTS(BM25)<br/>hybrid = RRF")]
     end
 
     subgraph ingest["ingest/"]
-        extract["extract.py<br/>секции, drop refs/acks"]
+        extract["extract.py<br/>sections, drop refs/acks"]
         chunk["chunk.py<br/>chunk_sections"]
     end
 
-    subgraph agent["agent/ (Milestone 3-4)"]
+    subgraph agent["agent/"]
         state["state.py<br/>ResearchState"]
-        planner["planner.py<br/>вопрос → подвопросы"]
-        funnel["funnel.py<br/>discovery→триаж→deep read"]
-        loop["loop.py<br/>gap-оценка, budget,<br/>faithfulness-retry"]
-        synth["synthesize.py<br/>ответ + [n] цитаты"]
+        planner["planner.py<br/>question → subquestions"]
+        funnel["funnel.py<br/>discovery→triage→deep read"]
+        loop["loop.py<br/>gap-check, budget,<br/>faithfulness-retry"]
+        synth["synthesize.py<br/>answer + [n] citations"]
         eval["evaluate.py<br/>coverage + faithfulness"]
     end
 
-    subgraph sources["sources/ (только метаданные)"]
+    subgraph sources["sources/ (metadata only)"]
         arxiv["arxiv.py"]
         s2["semantic_scholar.py"]
-        websearch["web.py / tavily.py<br/>(SearXNG или Tavily, см. ниже)"]
+        websearch["web.py / tavily.py<br/>(SearXNG or Tavily, see below)"]
     end
 
     browser <--> fastapi
@@ -91,248 +96,183 @@ flowchart TB
     synth --> llm
 ```
 
-Ключевой инвариант памяти (§1 плана): `embed`/`llm` резидентны, `rerank`
-грузится и освобождается на каждый вызов — никогда две тяжёлые модели не
-держатся резидентно одновременно рядом с реранкером.
+Key memory invariant: `embed`/`llm` stay resident; `rerank` loads and
+releases on every call — two heavy models are never resident at once next
+to the reranker.
 
-## Milestone 0 — тупой сквозной путь
+## Local RAG: `index` / `ask`
 
-Single-pass RAG без цикла и воронки: `index` строит эмбеддинг-индекс из
-`corpus/` в LanceDB, `ask` находит top-k чанков и просит локальную LLM
-(Qwen через MLX) ответить с цитатами `[n]`.
+The simple path: build an embedding index from local files, then ask
+questions grounded in that index only (no internet access).
 
-## Milestone 1 — hybrid retrieval + чистое извлечение
-
-- `ingest/extract.py` — секция-осознанное извлечение (markdown/HTML/PDF),
-  отбрасывает References/Bibliography/Acknowledgments/Appendix.
-- `ingest/chunk.py` — `chunk_sections` режет чанки по границам секций.
-- `store/lancedb_store.py` — гибридный поиск (`search_hybrid`): dense-вектор
-  + LanceDB FTS (BM25, `language="Russian"`), слияние через RRF. `search_dense`
-  оставлен как baseline для сравнения.
-- `ask` теперь использует `search_hybrid` по умолчанию.
-
-### Установка
-
-```bash
-uv venv
-uv pip install -r requirements.txt
-```
-
-### Запуск
+- `ingest/extract.py` — section-aware extraction (markdown/HTML/PDF), drops
+  References/Bibliography/Acknowledgments/Appendix sections.
+- `ingest/chunk.py` — `chunk_sections` chunks along section boundaries so a
+  chunk never straddles two sections.
+- `store/lancedb_store.py` — hybrid search (`search_hybrid`): dense vector +
+  LanceDB full-text search (BM25), merged via RRF. `search_dense` is kept
+  as a baseline for comparison.
+- `providers/rerank.py` — `mlx-community/Qwen3-Reranker-0.6B-4bit` (pure
+  MLX, 331MB). `ask` takes `RERANK_CANDIDATES_K` hybrid-search hits, the
+  reranker loads, scores, releases, and returns the top
+  `TOP_K_RETRIEVE`. Toggle off with `config.RERANK_ENABLED = False`.
 
 ```bash
 python -m src.cli index
-python -m src.cli ask "Что такое RAG?"
+python -m src.cli ask "What is RAG?"
 ```
 
-`index` читает `.txt`/`.md`/`.html`/`.pdf` из `corpus/` (в репозитории лежит
-маленький тестовый корпус: 3 заметки про RAG/векторные БД/локальные LLM + одна
-статья-образец с Abstract/Introduction/Method/Results/Conclusion/References/
-Acknowledgments — проверить отброс References/Acknowledgments).
+`index` reads `.txt`/`.md`/`.html`/`.pdf` files from `corpus/` (the repo
+ships a small sample corpus: three notes on RAG/vector DBs/local LLMs, plus
+one sample "paper" with Abstract/Introduction/Method/Results/Conclusion/
+References/Acknowledgments to exercise the reference-stripping logic).
 
-### Тесты
+## Deep research: `research`
+
+```bash
+python -m src.cli research "What approaches exist for KV-cache compression in transformers?"
+```
+
+Unlike `ask`, `research` actively goes out and finds new material instead
+of only searching a pre-built index:
+
+- `agent/state.py` — `ResearchState`: subquestions, candidates, `read_ids`,
+  findings, budget.
+- `sources/arxiv.py`, `sources/semantic_scholar.py`, `sources/web.py` /
+  `sources/tavily.py` — metadata-only discovery. arXiv and Semantic Scholar
+  work without a key; the web source picks Tavily if `TAVILY_API_KEY` is
+  set, otherwise falls back to a local SearXNG instance (see below).
+- `agent/planner.py` — question → subquestions via a deterministic
+  heuristic, not an LLM call (small local models are unreliable
+  multi-step planners, so planning logic lives in code).
+- `agent/funnel.py` — discovery → embedding-based triage → deep read (PDF
+  fetch + section extraction for arXiv, abstract-only fallback for sources
+  without full text). Non-English subquestions get translated to a short
+  English search query via a bounded LLM call first — arXiv/Semantic
+  Scholar otherwise return zero results for Russian queries.
+- `agent/loop.py` — the iterative controller. A subquestion is "covered"
+  when retrieval clears a reranker score threshold (`FUNNEL_MIN_RERANK_SCORE
+  = 0.5`) across at least `FUNNEL_MIN_SOURCES_TO_COVER = 3` distinct
+  sources; each retry pass asks sources for more candidates than the last.
+
+Search breadth and budget are tunable in `config.py`:
+`FUNNEL_DISCOVERY_LIMIT_PER_SOURCE` (candidates requested per source),
+`FUNNEL_TRIAGE_TOP_N` (how many go to deep read), and
+`DEFAULT_BUDGET_MAX_ITERATIONS` / `_MAX_DEEP_READS` / `_MAX_SECONDS`.
+
+### Citation-aware triage
+
+- Semantic Scholar reports `citationCount` directly; arXiv doesn't, so it's
+  backfilled via the [OpenAlex](https://openalex.org) Works API
+  (`sources/citations.py`, no key required). The triage score is semantic
+  similarity to the subquestion plus a small log-scaled citation boost
+  (`config.CITATION_BOOST_SCALE`) — a tie-breaker between similarly
+  relevant candidates, not a substitute for relevance.
+- `url` and `citation_count` flow through the whole pipeline (discovery →
+  deep read → LanceDB → retrieval) and show up as clickable links (CLI:
+  a plain URL most terminals auto-link; web UI: a real `<a href>` with a
+  citation-count badge when known).
+
+### Self-evaluation
+
+`agent/evaluate.py` checks the generated answer before it ships:
+
+- **Citation coverage** — share of claim-sentences carrying at least one
+  `[n]`.
+- **Faithfulness** — share of cited claims actually supported by the text
+  of their cited source, checked via `providers/rerank.score_pairs`
+  (reuses the existing reranker instead of a separate NLI model or another
+  LLM call).
+
+`agent/loop.py` wires this in: once every subquestion is covered, a draft
+answer is scored, and if faithfulness is low, subquestions reopen for one
+more forced-discovery pass within budget — `force_discovery` guarantees a
+real new search happens on that pass even if the persistent index would
+otherwise consider the subquestion already "covered" by stale content from
+an earlier question.
+
+### Process visibility
+
+The answer isn't a black box — after completion, the page/CLI output keeps:
+
+- **Progress log** — stays visible next to the answer (not hidden once
+  done): how many subquestions, how many iterations, what got read.
+- **All discovered candidates** — a table of every candidate the funnel
+  found (not just the ones cited in the final answer), sorted by triage
+  score: score, citation count, source (`arxiv`/`semantic_scholar`/`web`),
+  a clickable link, and a checkmark if it was actually deep-read
+  (`agent/research_runner.py::CandidateSummary`).
+
+## Web search: Tavily (recommended) or local SearXNG
+
+`agent/research_runner.py::default_sources()` picks the web source
+automatically:
+
+- **`TAVILY_API_KEY` set** (in `.env`, see `.env.example`) → `sources/tavily.py`,
+  a managed search API with no third-party engine reliability problems.
+  Gives noticeably broader, more authoritative coverage in practice.
+- **No key** → `sources/web.py`, a local [SearXNG](https://docs.searxng.org/)
+  instance in Docker — no key, no rate limits of its own, but some of its
+  underlying engines (DuckDuckGo, Brave) get blocked by their own
+  providers (CAPTCHA/rate-limit) even through a local proxy.
+
+```bash
+cp .env.example .env
+# put TAVILY_API_KEY=... in .env — free tier is roughly 1000 requests/month
+```
+
+Without a Tavily key, use local SearXNG instead:
+
+```bash
+docker compose up -d          # start (once, runs in the background)
+docker compose down           # stop
+curl "http://localhost:8888/search?q=test&format=json"   # sanity check
+```
+
+Without `docker compose up -d` running, `WebSource.discover()` just
+returns an empty list — `research` doesn't crash, the funnel carries on
+with whatever arXiv/Semantic Scholar found.
+
+## Web UI: `serve`
+
+```bash
+python -m src.cli serve                    # http://127.0.0.1:8000
+python -m src.cli serve --port 8080         # different port
+```
+
+FastAPI plus a single plain-JS HTML page (no build step, no Node/npm). A
+`research()` run can take minutes (real models, external APIs), so it runs
+in a background thread; the client polls `GET /api/jobs/{id}` once a
+second rather than using SSE/WebSockets — unnecessary complexity for a
+single local user. Only one job runs at a time (loading multiple heavy
+models concurrently isn't safe on 16GB) — a second request while one is
+running gets `409`, not a silent queue.
+
+## Tests and eval scripts
 
 ```bash
 uv run pytest -q
 ```
 
-Тесты офлайн: эмбеддинги и LLM мокаются, реальная загрузка Qwen3.5/bge-m3 не
-требуется для прогона тестов.
+Unit tests are offline and fast — embeddings and the LLM are mocked, no
+real model load needed to run the suite.
 
-### Eval retrieval@k (dense vs hybrid)
-
-Не pytest — гоняет реальные bge-m3-эмбеддинги, требует уже построенного
-индекса:
-
-```bash
-python -m src.cli index
-python -m scripts.eval_retrieval
-```
-
-Последний прогон (2026-08-05, 8 эталонных пар, k=3): dense 8/8, hybrid 8/8 —
-hybrid не хуже dense. Корпус пока мал, чтобы разница в recall проявилась, но
-ранжирование внутри top-k реально разное (проверено вручную на лексическом
-запросе про формулу RRF).
-
-## Milestone 2 — реранкер по требованию
-
-`providers/rerank.py` — `mlx-community/Qwen3-Reranker-0.6B-4bit` (чистый MLX,
-331MB): `cmd_ask` берёт `RERANK_CANDIDATES_K` кандидатов из hybrid-поиска,
-реранкер грузится, скорит, освобождается, отдаёт top-`TOP_K_RETRIEVE`.
-Отключается флагом `config.RERANK_ENABLED = False`.
-
-Изначально планировался `BAAI/bge-reranker-v2-m3` (FlagEmbedding/torch), но он
-конфликтует по версии `transformers` с `mlx_lm` (LLM-провайдер) — подробности
-в `DEVELOPMENT_PLAN.md`.
+A few scripts run against real models (not part of `pytest`, since
+measuring retrieval/rerank/faithfulness quality without real models would
+be meaningless):
 
 ```bash
 python -m src.cli index
-python -m scripts.eval_rerank
+python -m scripts.eval_retrieval      # dense vs hybrid retrieval@k
+python -m scripts.eval_rerank         # hybrid vs hybrid+rerank hit@1
+python -m scripts.eval_faithfulness   # citation coverage + faithfulness
 ```
 
-Последний прогон (2026-08-05): hit@1 hybrid 8/8, +rerank 8/8 — на этом
-корпусе реранк не деградирует hybrid. Замер памяти (`mlx.core`):
-`active_memory`/`cache_memory` 0 → 335MB/360MB во время скоринга → 0/0 после
-`_release()` — модель реально не резидентна между вызовами.
+## Known assumptions (`ARCH-Q`)
 
-## Milestone 3 — воронка + итеративный цикл + состояние
-
-`python -m src.cli research "вопрос"` — deep-research режим поверх внешних
-источников (в отличие от `ask`, который ищет только по уже построенному
-локальному индексу):
-
-- `agent/state.py` — `ResearchState` (подвопросы, кандидаты, `read_ids`,
-  findings, бюджет).
-- `sources/arxiv.py`, `sources/semantic_scholar.py`, `sources/web.py` —
-  discovery по метаданным, все три реально работают без ключа (web — через
-  локальный SearXNG, см. раздел ниже).
-- `agent/planner.py` — вопрос → подвопросы (детерминированная эвристика, без
-  LLM — план явно требует держать планирование в коде).
-- `agent/funnel.py` — discovery → эмбеддинг-триаж → deep read (PDF для
-  arXiv, abstract-fallback для источников без full-text). Подвопросы на
-  русском переводятся в английский поисковый запрос bounded LLM-вызовом
-  перед discovery — иначе arXiv/Semantic Scholar дают 0 совпадений.
-- `agent/loop.py` — итеративный контроллер: gap-оценка = порог score
-  реранкера (`>= 0.5`) И покрытие ≥3 разных источников; с каждым проходом
-  discovery запрашивает больше кандидатов. Ширину поиска регулируют
-  `config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE` (кандидатов на источник),
-  `FUNNEL_TRIAGE_TOP_N` (сколько идёт на deep read) и бюджет
-  (`DEFAULT_BUDGET_MAX_*`) — увеличены 2026-08-06 по запросу пользователя,
-  реальные числа до/после в `DEVELOPMENT_PLAN.md`.
-
-```bash
-python -m src.cli research "Какие подходы применяются для сжатия KV-cache в трансформерах?"
-```
-
-Реальные прогоны (2026-08-05, подробности и три найденных бага — в
-`DEVELOPMENT_PLAN.md`): >1 итерации с новыми (не предзагруженными) статьями
-подтверждено; кэш-хит на повторном вопросе подтверждён (`iterations=1`, 0
-новых `read_ids`, 0 внешних запросов); завершение по `budget` с честным
-отражением gaps в ответе подтверждено.
-
-## Milestone 4 — оценка + упаковка
-
-`agent/evaluate.py` — самопроверка сгенерированного ответа:
-
-- **Citation coverage** — доля предложений-утверждений с хотя бы одной `[n]`.
-- **Faithfulness** — доля процитированных утверждений, реально подтверждённых
-  текстом источника (проверяется через `providers/rerank.score_pairs` —
-  переиспользуем уже готовый калиброванный реранкер вместо отдельной
-  NLI-модели или ещё одного LLM-вызова).
-
-`agent/loop.py` интегрирует это: когда все подвопросы покрыты, черновой
-синтез прогоняется через `evaluate()` — при низкой faithfulness подвопросы
-переоткрываются на один дополнительный проход в пределах `budget`, с
-`force_discovery` — реальный поиск на этом проходе гарантирован, даже если
-персистентный индекс формально уже "покрывает" подвопрос старыми чанками
-(реальный баг, найден и исправлен — подробности в `DEVELOPMENT_PLAN.md`).
-
-```bash
-python -m src.cli index
-python -m scripts.eval_faithfulness
-```
-
-Последний прогон (2026-08-05, 8 эталонных вопросов): среднее citation
-coverage 0.59, среднее faithfulness 0.75. Два кейса, где eval поймал
-неподтверждённое утверждение — контролируемый (юнит-тест с намеренно
-выдуманным фактом) и реальный (модель честно написала мета-утверждение об
-отсутствии данных, сославшись сразу на диапазон `[1]–[5]` — eval пометил это
-unsupported, т.к. реранкер плохо валидирует отрицания против одного
-источника; подробности и попытки спровоцировать настоящую выдумку числа — в
-`DEVELOPMENT_PLAN.md`).
-
-## Общий веб-поиск: Tavily (рекомендуется) или локальный SearXNG
-
-`agent/research_runner.py::default_sources()` сам выбирает веб-источник:
-
-- **Есть `TAVILY_API_KEY`** (в `.env`, см. `.env.example`) → `sources/tavily.py`,
-  управляемый поисковый API, без блокировок чужих движков. Реально даёт
-  заметно более широкое и авторитетное покрытие (PMC, Nature, IEEE Xplore
-  на реальных прогонах) — см. `DEVELOPMENT_PLAN.md`.
-- **Нет ключа** → `sources/web.py`, локальный [SearXNG](https://docs.searxng.org/)
-  в Docker, без ключа и без своих лимитов запросов, но часть его движков
-  (DuckDuckGo, Brave) блокируется на стороне их провайдеров даже через
-  прокси (CAPTCHA/rate-limit — проверено по логам контейнера, подробности в
-  `DEVELOPMENT_PLAN.md`).
-
-```bash
-cp .env.example .env
-# впиши TAVILY_API_KEY=... в .env — свободный тир ~1000 запросов/мес
-```
-
-Без ключа Tavily — локальный SearXNG:
-
-```bash
-docker compose up -d          # поднять (один раз, держится в фоне)
-docker compose down           # остановить
-curl "http://localhost:8888/search?q=test&format=json"   # проверить, что работает
-```
-Без поднятого `docker compose up -d` `WebSource.discover()` просто
-возвращает пустой список (не роняет `research` — воронка продолжает с
-arXiv/Semantic Scholar).
-
-## Веб-интерфейс
-
-```bash
-python -m src.cli serve                    # http://127.0.0.1:8000
-python -m src.cli serve --port 8080         # другой порт
-```
-
-FastAPI + одна HTML-страница на чистом JS (без сборки, без Node/npm).
-Форма с вопросом → live-прогресс воронки (итерации, найденные кандидаты,
-что сейчас читается) → готовый ответ с цитатами `[n]`, списком источников
-и статистикой. Один research()-прогон может занимать минуты — выполняется
-в фоновом потоке, прогресс отдаётся клиенту через polling раз в секунду.
-Одновременно разрешён только один прогон (§1 плана: нельзя параллельно
-грузить несколько тяжёлых моделей на 16ГБ) — второй запрос, пока первый не
-завершён, получает `409`.
-
-Реально проверено в браузере (не только тестами): полный цикл форма → job
-→ прогресс → ответ на вопросе про сжатие KV-cache, подробности в
-`DEVELOPMENT_PLAN.md` (пост-M4 раздел).
-
-### Видимость процесса: что именно нашёл и почему
-
-Ответ — не чёрный ящик. После завершения на странице остаются:
-
-- **"Ход исследования"** — панель прогресса не скрывается после ответа:
-  видно, сколько подвопросов, сколько итераций, что было прочитано.
-- **"Все найденные кандидаты"** — раскрывающаяся таблица ВСЕХ кандидатов
-  (не только процитированных в ответе), отсортированных по score триажа:
-  score, цитируемость, источник (`arxiv`/`semantic_scholar`/`web`),
-  кликабельная ссылка, отметка `✓`, если реально был прочитан. Это и есть
-  видимый след того, как воронка сузила поиск (`agent/research_runner.py::
-  CandidateSummary`).
-
-В CLI то же самое — `research` печатает и live-прогресс, и таблицу всех
-кандидатов в конце.
-
-## Цитируемость и кликабельные ссылки
-
-- **Цитируемость в триаже.** Semantic Scholar отдаёт `citationCount` сам;
-  для arXiv обогащаем через [OpenAlex](https://openalex.org) Works API
-  (`sources/citations.py`, без ключа). Итоговый score триажа = семантическая
-  близость к подвопросу + небольшой логарифмический буст по цитируемости
-  (`config.CITATION_BOOST_SCALE`) — тайбрейкер между близкими по смыслу
-  кандидатами, не замена смысловой релевантности.
-- **Ссылки** (`url`) и **цитируемость** текут через весь пайплайн (discovery
-  → deep read → LanceDB → retrieval) и рендерятся: в CLI — голым URL под
-  источником (терминалы сами делают его кликабельным), в веб-интерфейсе —
-  настоящей ссылкой `<a href>` с бейджем "цитирований: N", если данные есть.
-
-Реальный баг, найденный на живом прогоне и исправленный: OpenAlex
-полнотекстовый поиск (`search=`) один раз вернул статью **"XGBoost"**
-(50k+ цитирований) на запрос про заголовок совершенно другой, новой статьи —
-заголовки не похожи, просто общая лексика. Исправлено через
-`filter=title.search:...` + проверку похожести заголовков; подробности,
-регрессионные тесты и повторное подтверждение реальным прогоном — в
-`DEVELOPMENT_PLAN.md`.
-
-## Известные допущения (`ARCH-Q`)
-
-Непроверенные на реальном железе допущения помечены `# ARCH-Q:` прямо в коде
-(`src/config.py`, `src/providers/embed.py`, `src/providers/llm.py`) —
-HF-репо/тег LLM, kwarg устройства FlagEmbedding, поддержка
-`enable_thinking` в chat-template. Проверить и зафиксировать при первом
-реальном запуске на M4 Air, включая пик памяти (см. критерий готовности в
-`DEVELOPMENT_PLAN.md`).
+Assumptions that couldn't be verified without real hardware are marked
+`# ARCH-Q:` directly in the code (`src/config.py`, `src/providers/embed.py`,
+`src/providers/llm.py`) — LLM HF repo/tag, the FlagEmbedding device kwarg,
+`enable_thinking` support in the chat template, and so on. See
+`DEVELOPMENT_PLAN.md` for which of these have since been confirmed by a
+real run on the target hardware, including peak memory numbers.

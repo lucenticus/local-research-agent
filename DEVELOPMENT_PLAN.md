@@ -1,412 +1,587 @@
-# Deep-Research Agent — план разработки
+# Deep-Research Agent — development plan
 
-Локальный агент научных исследований и трендов. Итеративно ищет по arXiv / Semantic Scholar / web, читает выборочно, синтезирует ответ с цитатами и самопроверкой.
+A local agent for scientific research and trends. Iteratively searches
+arXiv / Semantic Scholar / the web, reads selectively, synthesizes an
+answer with citations and self-verification.
 
-**Цель железа:** MacBook M4 Air, 16 ГБ. Всё локально.
-**Как вести:** реализуем **по одному милестону за раз**, каждый — отдельная ветка/серия коммитов, после каждого стоп и ревью. Не начинать следующий милестон, пока критерии готовности предыдущего не выполнены.
-
----
-
-## 1. Жёсткие ограничения (не нарушать)
-
-Эти правила важнее фич. Любой код, который их ломает, — брак.
-
-- **Один резидентный инстанс LLM в процессе.** Проект держит собственную копию Qwen3.5 (скопирована в репозиторий) и грузит её один раз через MLX — независимо от storyreel. Не инстанцировать модель дважды в одном процессе (напр. отдельно в синтезе и в gap-check); переиспользовать единый инстанс. `# ARCH-Q:` код загрузки MLX можно взять за образец из storyreel.
-- **Реранкер — только по требованию.** Грузить перед реранком, освобождать после. Никогда не держать резидентно рядом с LLM.
-- **Контекст под лимитом.** Жёсткий потолок на символы/токены контекста синтеза (config). Длинный контекст раздувает KV-cache — это главный риск OOM.
-- **Эмбеддинги переживают CPU.** `# ARCH-Q:` bge-m3 по умолчанию на MPS; если MPS под давлением рядом с LLM — фолбэк на CPU (эмбеддинг запроса дёшев).
-- **Не индексируем всё.** Никакого bulk-скачивания корпусов. Извлечение — прогрессивной воронкой (см. §3), полный текст и эмбеддинг только для того, что прошло триаж.
-- **Потоковая обработка.** Корпус обрабатывать генераторами, не держать все документы в памяти разом.
+**Target hardware:** MacBook M4 Air, 16GB. Fully local.
+**How to proceed:** implement **one milestone at a time**, each its own
+branch/commit series, stop and review after each. Don't start the next
+milestone until the previous one's acceptance criteria are met.
 
 ---
 
-## 2. Стек
+## 1. Hard constraints (do not violate)
 
-| Слой | Выбор | Заметка |
+These rules outrank features. Any code that breaks them is broken code.
+
+- **One resident LLM instance per process.** The project keeps its own
+  copy of Qwen3.5 (copied into the repo) and loads it once via MLX —
+  independent of storyreel. Never instantiate the model twice in one
+  process (e.g. separately in synthesis and in gap-check); reuse the single
+  instance. `# ARCH-Q:` the MLX loading code can be modeled on storyreel's.
+- **Reranker — on demand only.** Load before reranking, release after.
+  Never keep it resident next to the LLM.
+- **Context under a hard cap.** A hard ceiling on synthesis context
+  characters/tokens (config). Long context inflates the KV-cache — the
+  main OOM risk.
+- **Embeddings survive on CPU.** `# ARCH-Q:` bge-m3 defaults to MPS; if MPS
+  is under pressure next to the LLM, fall back to CPU (query embedding is
+  cheap).
+- **We don't index everything.** No bulk corpus downloads. Extraction is a
+  progressive funnel (see §3), full text and embedding only for what
+  passed triage.
+- **Streaming processing.** Process the corpus with generators, never hold
+  all documents in memory at once.
+
+---
+
+## 2. Stack
+
+| Layer | Choice | Note |
 |---|---|---|
-| Генерация | Qwen3.5-4B (Q4), MLX, собственная копия в проекте | резидентно, один инстанс |
-| Эмбеддинги | bge-m3 (dense + sparse), FlagEmbedding | резидентно; MPS→CPU фолбэк |
-| Реранкер | bge-reranker-v2-m3 | по требованию |
-| Хранилище | LanceDB (встроенное, на диске) | без отдельного сервера |
-| Источники | arXiv API, Semantic Scholar Graph API, web (Tavily или SearXNG) | ключи/лимиты в config |
-| Извлечение текста | arXiv HTML/TeX если есть, иначе PDF→текст (pymupdf) | секция-осознанно |
+| Generation | Qwen3.5-4B (Q4), MLX, own copy in the project | resident, single instance |
+| Embeddings | bge-m3 (dense + sparse), FlagEmbedding | resident; MPS→CPU fallback |
+| Reranker | bge-reranker-v2-m3 | on demand |
+| Storage | LanceDB (embedded, on disk) | no separate server |
+| Sources | arXiv API, Semantic Scholar Graph API, web (Tavily or SearXNG) | keys/limits in config |
+| Text extraction | arXiv HTML/TeX if available, else PDF→text (pymupdf) | section-aware |
 
 ---
 
-## 3. Целевая архитектура
+## 3. Target architecture
 
-Прогрессивная воронка извлечения — платим за дорогое только за то, что прошло фильтр:
+A progressive extraction funnel — pay for the expensive stuff only for
+what clears the filter:
 
-1. **Discovery** — запрос в источники, назад только метаданные (title, abstract, год, цитируемость). Дёшево, десятки-сотни кандидатов на подвопрос.
-2. **Триаж** — скоринг кандидатов по abstract против подвопроса (эмбеддинг/реранк abstract). Оставляем top-N (10–20). Большинство статей умирает здесь — полный текст не качаем.
-3. **Deep read** — только для выживших: полный текст → секция-осознанное извлечение (приоритет abstract/intro/method/results/conclusion, отброс references/acks) → чанкинг → эмбеддинг → LanceDB.
-4. **Кэш** — прочитанное персистентно лежит в LanceDB, переиспользуется будущими вопросами. Корпус растёт органически из исследованного.
+1. **Discovery** — query the sources, only metadata comes back (title,
+   abstract, year, citation count). Cheap, dozens-to-hundreds of
+   candidates per subquestion.
+2. **Triage** — score candidates by abstract against the subquestion
+   (embedding/rerank on the abstract). Keep top-N (10–20). Most articles
+   die here — full text is never fetched.
+3. **Deep read** — only for survivors: full text → section-aware
+   extraction (prioritize abstract/intro/method/results/conclusion, drop
+   references/acks) → chunking → embedding → LanceDB.
+4. **Cache** — what's been read persists in LanceDB, reused by future
+   questions. The corpus grows organically from what's been researched.
 
-Управляющий контур — **итеративный цикл** вокруг объекта состояния (§5). Планировщик и gap-оценка живут в коде, не в голове 4B-модели. LLM работает только на синтезе (и опционально — bounded gap-check).
+The control loop is an **iterative loop** around a state object (§5). The
+planner and gap-assessment live in code, not in the 4B model's head. The
+LLM is only used for synthesis (and, optionally, a bounded gap-check).
 
 ---
 
-## 4. Структура репозитория
+## 4. Repository layout
 
 ```
 research-agent/
-  CLAUDE.md                 # конвенции (см. §7)
-  DEVELOPMENT_PLAN.md       # этот файл
+  CLAUDE.md                 # conventions (see §7)
+  DEVELOPMENT_PLAN.md       # this file
   README.md
   requirements.txt
-  config.py                 # пути, теги моделей, лимиты памяти/контекста, API-ключи
-  corpus/                   # локальные .txt/.md для milestone 0
+  config.py                 # paths, model tags, memory/context limits, API keys
+  corpus/                   # local .txt/.md for milestone 0
   src/
     providers/
-      llm.py                # загрузка собственной копии Qwen3.5 через MLX, один инстанс
-      embed.py              # bge-m3: dense + sparse, MPS/CPU
-      rerank.py             # bge-reranker, load-on-demand + release
+      llm.py                # loads the project's own Qwen3.5 copy via MLX, single instance
+      embed.py               # bge-m3: dense + sparse, MPS/CPU
+      rerank.py               # bge-reranker, load-on-demand + release
     store/
-      lancedb_store.py      # схема, upsert, hybrid search
+      lancedb_store.py      # schema, upsert, hybrid search
     ingest/
-      extract.py            # PDF/HTML/TeX -> чистый текст, секция-осознанно
-      chunk.py              # чанкинг
+      extract.py             # PDF/HTML/TeX -> clean text, section-aware
+      chunk.py                # chunking
     sources/
-      base.py               # общий интерфейс Source: discover() -> [Candidate]
+      base.py                 # common Source interface: discover() -> [Candidate]
       arxiv.py
       semantic_scholar.py
       web.py
     retrieval/
-      retriever.py          # hybrid (dense+sparse) + опц. rerank
+      retriever.py            # hybrid (dense+sparse) + optional rerank
     agent/
-      state.py              # ResearchState (§5)
-      planner.py            # вопрос -> подвопросы
-      funnel.py             # discovery -> триаж -> deep read
-      loop.py               # итеративный контроллер (gap, стоп-условие)
-      synthesize.py         # ответ с цитатами [n]
-      evaluate.py           # faithfulness / groundedness
-    cli.py                  # entrypoints: index, ask
+      state.py                 # ResearchState (§5)
+      planner.py               # question -> subquestions
+      funnel.py                 # discovery -> triage -> deep read
+      loop.py                   # iterative controller (gap, stop condition)
+      synthesize.py             # answer with [n] citations
+      evaluate.py               # faithfulness / groundedness
+    cli.py                    # entrypoints: index, ask
   tests/
 ```
 
-Каждый модуль — тонкий интерфейс (провайдер-швы), чтобы компоненты были заменяемы и тестируемы с моками.
+Each module is a thin interface (provider seams), so components stay
+swappable and testable with mocks.
 
 ---
 
-## 5. Объект состояния исследования
+## 5. Research state object
 
-`ResearchState` — единый объект, который читают и пишут планировщик, воронка, цикл, синтезатор. Поля (ориентир):
+`ResearchState` — a single object read and written by the planner, funnel,
+loop, and synthesizer. Fields (guideline):
 
-- `question: str` — исходный вопрос
-- `sub_questions: list[SubQ]` — каждый со статусом `open | covered`
-- `candidates: list[Candidate]` — найденные (id, source, title, abstract, meta, triage_score)
-- `read_ids: set[str]` — что уже глубоко прочитано (дедуп, не читать дважды)
-- `findings: list[Finding]` — извлечённые чанки (text, source_id, под какой sub_q)
-- `gaps: list[str]` — незакрытые пробелы (драйвят доуточнение)
-- `iterations: int`, `budget: Budget` — счётчик и лимиты (макс итераций, макс deep-read, время)
+- `question: str` — the original question
+- `sub_questions: list[SubQ]` — each with status `open | covered`
+- `candidates: list[Candidate]` — found so far (id, source, title, abstract,
+  meta, triage_score)
+- `read_ids: set[str]` — what's already been deep-read (dedup, never read
+  twice)
+- `findings: list[Finding]` — extracted chunks (text, source_id, which
+  sub_q they belong to)
+- `gaps: list[str]` — unclosed gaps (drive follow-up)
+- `iterations: int`, `budget: Budget` — counter and limits (max
+  iterations, max deep-reads, time)
 
-Инварианты: не читать один `id` дважды; `candidates`/`findings` только растут в пределах запроса; цикл обязан завершаться по `budget` даже если пробелы остались (тогда честно сказать в ответе).
-
----
-
-## 6. Милестоны
-
-### Milestone 0 — тупой сквозной путь
-**Цель:** end-to-end на предзагруженном мини-корпусе, single-pass, без цикла и воронки.
-**Задачи:** `config.py`; `providers/embed.py` (bge-m3 dense); `store/lancedb_store.py` (index + vector search); `ingest/chunk.py` (наивный фикс-чанкинг); `providers/llm.py` (загрузка Qwen3.5 через MLX, один инстанс); `agent/synthesize.py` (промпт с цитатами); `cli.py` (`index`, `ask`). Стартовать можно от готового `rag_skeleton.py`.
-**Готово, когда:**
-- [ ] `python -m src.cli index` строит индекс из `corpus/`
-- [ ] `python -m src.cli ask "..."` выдаёт ответ с цитатами `[n]` и списком источников
-- [x] пиковая память замерена и укладывается в бюджет: реальный прогон на M4 Air 16ГБ 2026-08-04, `ask` (bge-m3 dense на MPS + Qwen3.5-4B-4bit резидентно одновременно) — **peak memory footprint ~5.92ГБ**, `index` (только эмбеддинг) — ~3.2ГБ. Оба укладываются в бюджет 16ГБ с большим запасом.
-**Не делать:** источники, реранк, цикл, воронку.
-
-### Milestone 1 — hybrid retrieval + чистое извлечение ✅ (2026-08-05)
-**Цель:** ретривал стал хорошим.
-**Задачи:** `embed.py` — добавить sparse-выход bge-m3; `lancedb_store.py` — FTS-индекс + hybrid search со слиянием (RRF), `# ARCH-Q:` уточнить актуальный hybrid-API LanceDB; `ingest/extract.py` — секция-осознанное извлечение (PDF/HTML), отброс references/acks; умный чанкинг по границам секций.
-
-**Решение по sparse (закрывает ARCH-Q):** проверено вручную на lancedb 0.36.0 — нативный `table.create_index("text", config=FTS(language="Russian", stem=True))` + `table.search(query_type="hybrid").vector(...).text(...)`, дефолтный реранкер `RRFReranker`. Русский стеммер в tantivy работает корректно на кириллице (проверено). Поэтому "sparse"-сигнал реализован через LanceDB FTS/BM25, а не через отдельный sparse-выход bge-m3 (lexical weights) — держать оба было бы дублирующим сигналом без проверенной пользы на масштабе проекта; отражено в docstring `lancedb_store.py`.
-
-**Готово, когда:**
-- [x] retriever отдаёт слитую dense+FTS выдачу (`LanceDBStore.search_hybrid`, RRF) — dense-only сохранён как `search_dense` для сравнения
-- [x] 8 эталонных пар (вопрос → source_id), `scripts/eval_retrieval.py`, реальные bge-m3-эмбеддинги. Recall@3: dense 8/8, hybrid 8/8 — hybrid не хуже dense (корпус пока мал, чтобы разница проявилась в recall; ранжирование при этом реально разное — проверено вручную на лексическом запросе, hybrid переставляет rank 2/3 против dense)
-- [x] извлечение из статьи не содержит библиографии/благодарностей — проверено на `corpus/hybrid_retrieval_paper.md` (References/Acknowledgments отсутствуют в индексе после `index`)
-**Не делать:** реранк, цикл.
-
-### Milestone 2 — реранкер (по требованию) ✅ (2026-08-05)
-**Цель:** точность выдачи выше, память под контролем.
-**Задачи:** `providers/rerank.py` (bge-reranker, load→score→release); включить в `retriever.py` как опциональный этап поверх top-N.
-
-**Смена модели (закрывает нежданный ARCH-Q):** BAAI/bge-reranker-v2-m3 через FlagEmbedding конфликтует по версии с mlx_lm — `FlagReranker` требует `tokenizer.prepare_for_model`, метод удалён в `transformers>=5`, а `mlx_lm` (наш LLM-провайдер) требует `transformers>=5` (`TokenizersBackend`). Подтверждено реальным запуском: с `transformers<5` реранкер работает, но `ask` падает на загрузке LLM; с `transformers>=5` — наоборот. Переключились на `mlx-community/Qwen3-Reranker-0.6B-4bit` — чистый MLX (загружается через тот же `mlx_lm.load()`, что и основная LLM), конфликта нет вовсе. Мультиязычный, русский проверен вручную. Реализовано в `providers/rerank.py`.
-
-**Готово, когда:**
-- [x] реранк не хуже hybrid на эталонных парах — `scripts/eval_rerank.py`, hit@1: hybrid 8/8, +rerank 8/8 (корпус мал, чтобы показать выигрыш на уровне файлов; на ручной проверке порядка чанков внутри одной статьи реранк согласуется с hybrid-ранжированием, не деградирует)
-- [x] замер памяти подтверждает: реранкер не резидентен, освобождается после — `mx.get_active_memory()`/`get_cache_memory()` на реальном запуске: 0MB → 335MB (веса) / +360MB (кэш вычислений) во время скоринга → **0/0 после `_release()`** (`del` + `gc.collect()` + `mx.clear_cache()`)
-- [x] реранк отключается флагом в config — `config.RERANK_ENABLED`, при `False` `cmd_ask` берёт top-k прямо из hybrid-поиска
-
-### Milestone 3 — воронка + итеративный цикл + состояние (ядро) ✅ (2026-08-05)
-**Цель:** превращение из RAG в deep-research.
-**Задачи:** `agent/state.py` (§5); `sources/*` (discovery только метаданные, единый `base.Source`); `agent/funnel.py` (discovery→триаж→deep read с пополнением LanceDB на лету); `agent/planner.py` (вопрос→подвопросы); `agent/loop.py` (по открытым подвопросам: retrieve → gap-оценка → доуточнить/discover ещё → до покрытия или бюджета). Gap-оценка: старт эвристикой (порог score + покрытие подвопросов), опц. bounded LLM yes/no.
-
-**Реализовано:** `agent/state.py` (ResearchState/Candidate/Finding/Budget), `sources/base.py`+`arxiv.py`+`semantic_scholar.py`+`web.py` (arXiv и Semantic Scholar реально работают без ключа; web изначально был на Tavily/ключ — заменён на локальный SearXNG, см. пост-M4 апдейт ниже), `agent/planner.py` (детерминированная эвристика: составные вопросы режутся на "?"/";"/"а также", иначе один подвопрос), `agent/funnel.py` (discovery → эмбеддинг-триаж top-N → deep read: PDF+`extract_pdf_sections` для arXiv, честный fallback на abstract для источников без full-text), `agent/loop.py` (итеративный контроллер с растущим `discovery_limit` на повтор), `store/lancedb_store.py::add_chunks/has_source` (инкрементальный апсерт + кэш-хит), `cli.py research`.
-
-**Три реальных бага/пробела, найденных прогонами (не гипотетически):**
-1. **Off-by-one в бюджете итераций.** `state.iterations` инкрементировался ДО внутреннего цикла по подвопросам → `budget_exhausted()` внутри этого же цикла триггерился тем же инкрементом, и последний разрешённый проход всегда пропадал вхолостую. Пойман юнит-тестом на моках (`tests/test_loop.py`), фикс — инкремент после прохода.
-2. **arXiv/Semantic Scholar англоязычные, подвопросы — на русском.** Дословный русский запрос давал 0 результатов на реальном API. Добавлен bounded LLM-перевод подвопроса в короткий английский поисковый запрос перед discovery (`agent/funnel.py::_discovery_query`) — расширение допущенного планом "опц. bounded LLM" за пределы gap-check, т.к. без этого источники не работают для целевого (русскоязычного) пользователя.
-3. **Gap-оценка без порога score ложно "закрывала" нерелевантные подвопросы.** Первая версия считала подвопрос закрытым по одному критерию (≥2 разных source_id в top-k), без проверки релевантности — план же явно требовал "порог score + покрытие". На реальном прогоне тематически смежный (но не отвечающий на вопрос) локальный корпус про квантование LLM ложно "закрыл" вопрос про сжатие KV-cache. Фикс: гейт на калиброванный score реранкера (`rerank.score(...) >= 0.5`) поверх счёта различных источников — используем уже готовый реранкер вместо отдельного LLM yes/no.
-
-**Готово, когда:**
-- [x] на открытом вопросе агент делает >1 итерации и находит статьи, которых не было предзагружено — реальный прогон (изолированный индекс, вопрос про сжатие KV-cache, `FUNNEL_TRIAGE_TOP_N=1` для форсирования многопроходности): 3 итерации, 20 реальных кандидатов с arXiv/Semantic Scholar (ни один не был в локальном корпусе), 44 findings
-- [x] `read_ids` реально дедуплицирует — одна статья не читается дважды — юнит-тесты (`test_run_never_deep_reads_the_same_id_twice_across_calls`) + реальный прогон: повторный `funnel.run` с уже известным id не трогает store
-- [x] цикл всегда завершается по `budget`; при остаточных пробелах ответ это отражает — юнит-тесты на моках + реальный прогон с заведомо недостижимым порогом покрытия: цикл встал по `max_seconds`, `state.gaps == [вопрос]`, `synthesize()` получает gaps и честно указывает на непокрытую часть в ответе
-- [x] прочитанное осело в LanceDB и переиспользуется следующим вопросом (кэш-хит) — реальный прогон: второй вызов `loop.run()` с тем же вопросом на том же индексе — `iterations=1`, `read_ids` пуст, `candidates` пуст — покрытие взято из персистентного индекса без единого внешнего запроса
-**Не делать:** eval-слой, полировку.
-
-### Milestone 4 — оценка + упаковка ✅ (2026-08-05)
-**Цель:** самопроверка и showcase-готовность.
-**Задачи:** `agent/evaluate.py` (faithfulness: каждое утверждение выводимо из своего источника; citation coverage: у каждого утверждения есть `[n]`); интеграция в `loop.py` (низкая оценка → ещё итерация в пределах бюджета); опц. фигуры через VLM Qwen; README + диаграмма + воспроизводимость.
-
-**Реализовано:** `agent/evaluate.py` (citation coverage + faithfulness — faithfulness через уже готовый `providers/rerank.score_pairs`, не отдельная NLI-модель и не ещё один LLM-вызов: у каждого процитированного утверждения свой query, единый load/release реранкера на весь ответ); `providers/rerank.py::score_pairs` (новая функция под разные query на пару, в дополнение к `score`/`rerank`); `agent/loop.py` — после того как все подвопросы покрыты, черновой синтез прогоняется через `evaluate()`, при faithfulness ниже `EVAL_FAITHFULNESS_THRESHOLD` подвопросы переоткрываются на ОДИН дополнительный проход (не бесконечно — иначе системно слабое покрытие может жрать весь budget без пользы); `scripts/eval_faithfulness.py`.
-
-**Опц. фигуры через VLM Qwen — не реализовано** (в задачах помечено "опц.", осознанно вне скоупа: в проекте и так уже 3 модели по требованию/резидентно, VLM для рисунков — не критичная фича showcase).
-
-**Готово, когда:**
-- [x] на эталонных вопросах считается и печатается метрика faithfulness — `scripts/eval_faithfulness.py`, реальный прогон на 8 вопросах: среднее citation coverage 0.59, среднее faithfulness 0.75 (реальные числа с реальными моделями, не выдуманы)
-- [x] найден и продемонстрирован кейс, где eval поймал неподкреплённое утверждение — **два независимых кейса**: (1) юнит-тест `test_catches_unsupported_claim` — контролируемая инъекция выдуманного факта ("у китов три сердца и они дышат жабрами"), eval корректно ловит; (2) реальный прогон на вопросе про численное улучшение recall от гибридного поиска — модель (честно) написала мета-утверждение об отсутствии данных, процитировав диапазон `[1]–[5]`, eval пометил его unsupported (score реранкера ниже порога для одного источника). Второй случай — не фабрикация факта, а честно найденная граница метода: reranker плохо валидирует отрицания/мета-утверждения против одного источника. Попытки спровоцировать реальную выдумку числа (задавал вопросы про точные ГБ/мс/секунды, которых нет в корпусе) не удались — модель честно отвечала "нет данных в контексте" на всех попытках, что само по себе хороший знак качества синтеза
-- [x] `README` даёт запустить проект с нуля; есть диаграмма архитектуры
-- [x] есть честная метрика качества на нескольких эталонных вопросах — см. выше, числа реальные, не подогнаны
+Invariants: never read the same `id` twice; `candidates`/`findings` only
+ever grow within a request; the loop must terminate on `budget` even with
+gaps remaining (then say so honestly in the answer).
 
 ---
 
-## Пост-M4: рабочий общий веб-поиск (2026-08-05)
+## 6. Milestones
 
-Все 4 milestone'а плана закрыты, но `sources/web.py` из Milestone 3 был
-опционален и не проверен вживую (Tavily требует ключ, которого нет на этой
-машине). По просьбе пользователя доведён до реально рабочего состояния.
+### Milestone 0 — dumb end-to-end path
+**Goal:** end-to-end on a preloaded mini-corpus, single-pass, no loop or
+funnel.
+**Tasks:** `config.py`; `providers/embed.py` (bge-m3 dense);
+`store/lancedb_store.py` (index + vector search); `ingest/chunk.py` (naive
+fixed-size chunking); `providers/llm.py` (load Qwen3.5 via MLX, single
+instance); `agent/synthesize.py` (prompt with citations); `cli.py`
+(`index`, `ask`). Can start from a ready-made `rag_skeleton.py`.
+**Done when:**
+- [ ] `python -m src.cli index` builds an index from `corpus/`
+- [ ] `python -m src.cli ask "..."` returns an answer with `[n]` citations
+      and a source list
+- [x] peak memory measured and within budget: real run on M4 Air 16GB,
+      2026-08-04, `ask` (bge-m3 dense on MPS + Qwen3.5-4B-4bit resident at
+      the same time) — **peak memory footprint ~5.92GB**, `index`
+      (embedding only) — ~3.2GB. Both comfortably within the 16GB budget.
+**Not doing:** sources, reranking, the loop, the funnel.
 
-**Проверено вручную, оба бесплатных варианта без своей инфраструктуры не
-работают:**
-- DuckDuckGo HTML (`html.duckduckgo.com/html/`) — блокирует автоматические
-  запросы CAPTCHA-челленджем ("making sure you're not a bot", `cc=botnet` в
-  трекинг-пикселе ответа). Обходить это — bot-detection bypass, не делаем.
-- Публичные SearXNG-инстансы (searx.be, priv.au, searx.tiekoetter.com,
-  search.inetol.net, baresearch.org, opnxng.com) — либо `429 Too Many
-  Requests` почти сразу, либо HTML-only (публичные инстансы по умолчанию
-  выключают JSON API из-за абьюза), либо свой bot-check.
+### Milestone 1 — hybrid retrieval + clean extraction ✅ (2026-08-05)
+**Goal:** make retrieval good.
+**Tasks:** `embed.py` — add bge-m3's sparse output; `lancedb_store.py` —
+FTS index + hybrid search merged via RRF, `# ARCH-Q:` confirm the current
+LanceDB hybrid API; `ingest/extract.py` — section-aware extraction
+(PDF/HTML), drop references/acks; smart chunking along section boundaries.
 
-**Решение — локальный SearXNG в Docker**, свой инстанс без ключа и лимитов:
-`docker-compose.yml` + `searxng/settings.yml` (`use_default_settings: true`
-+ переопределение `search.formats: [html, json]`, иначе JSON выключен и в
-дефолтном образе тоже). Реальная ловушка: образ `searxng/searxng` слушает
-порт **8080 внутри контейнера**, а не 8888 (несмотря на то что дефолтный
-`settings.yml` указывает `server.port: 8888`, реальный uwsgi-процесс в этом
-образе поднимается на 8080) — `docker port` показал маппинг `8888/tcp`
-пустым, пока не поправили `ports: ["8888:8080"]` в compose.
+**Decision on sparse (closes the ARCH-Q):** confirmed by hand on lancedb
+0.36.0 — the native `table.create_index("text", config=FTS(language="Russian",
+stem=True))` + `table.search(query_type="hybrid").vector(...).text(...)`,
+default reranker `RRFReranker`. tantivy's Russian stemmer works correctly
+on Cyrillic (confirmed). So the "sparse" signal is implemented via LanceDB
+FTS/BM25 rather than a separate bge-m3 sparse output (lexical weights) —
+keeping both would be a duplicate signal with no proven benefit at this
+project's scale; documented in `lancedb_store.py`'s docstring.
 
-`sources/web.py` переписан под `GET {SEARXNG_BASE_URL}/search?q=...&format=json`
-(без ключа). Реальный прогон `loop.run()` с вопросом "какие есть локальные
-встраиваемые векторные БД для Apple Silicon" (тема, где arXiv/Semantic
-Scholar закономерно пусты — не научная статья, а инструменты/блоги): web
-нашёл 5 кандидатов (GitHub-репозитории, блог-посты), 3 прочитаны, подвопрос
-закрыт за 1 итерацию — источник реально участвует в воронке наравне с
-arXiv/Semantic Scholar.
+**Done when:**
+- [x] the retriever returns a merged dense+FTS result set
+      (`LanceDBStore.search_hybrid`, RRF) — dense-only kept as
+      `search_dense` for comparison
+- [x] 8 reference pairs (question → source_id), `scripts/eval_retrieval.py`,
+      real bge-m3 embeddings. Recall@3: dense 8/8, hybrid 8/8 — hybrid is
+      not worse than dense (the corpus is still too small for the
+      difference to show in recall; ranking is genuinely different though —
+      confirmed by hand on a lexical query, hybrid swaps ranks 2/3 relative
+      to dense)
+- [x] extraction from an article contains no bibliography/acknowledgments —
+      confirmed on `corpus/hybrid_retrieval_paper.md` (References/
+      Acknowledgments absent from the index after `index`)
+**Not doing:** reranking, the loop.
+
+### Milestone 2 — reranker (on demand) ✅ (2026-08-05)
+**Goal:** higher retrieval precision, memory under control.
+**Tasks:** `providers/rerank.py` (bge-reranker, load→score→release); wire
+into `retriever.py` as an optional stage on top of top-N.
+
+**Model swap (closes an unexpected ARCH-Q):** BAAI/bge-reranker-v2-m3 via
+FlagEmbedding conflicts by version with mlx_lm — `FlagReranker` requires
+`tokenizer.prepare_for_model`, a method removed in `transformers>=5`,
+while `mlx_lm` (our LLM provider) requires `transformers>=5`
+(`TokenizersBackend`). Confirmed by a real run: with `transformers<5` the
+reranker works but `ask` fails loading the LLM; with `transformers>=5` it's
+the other way around. Switched to `mlx-community/Qwen3-Reranker-0.6B-4bit`
+— pure MLX (loads via the same `mlx_lm.load()` as the main LLM), no
+conflict at all. Multilingual, Russian confirmed by hand. Implemented in
+`providers/rerank.py`.
+
+**Done when:**
+- [x] reranking is not worse than hybrid on the reference pairs —
+      `scripts/eval_rerank.py`, hit@1: hybrid 8/8, +rerank 8/8 (the corpus
+      is too small to show a file-level win; a manual check of chunk
+      ordering within one article shows reranking agrees with the hybrid
+      ranking, no regression)
+- [x] the memory measurement confirms the reranker isn't resident and gets
+      released — `mx.get_active_memory()`/`get_cache_memory()` on a real
+      run: 0MB → 335MB (weights) / +360MB (compute cache) while scoring →
+      **0/0 after `_release()`** (`del` + `gc.collect()` + `mx.clear_cache()`)
+- [x] reranking can be disabled with a config flag — `config.RERANK_ENABLED`;
+      when `False`, `cmd_ask` takes top-k straight from hybrid search
+
+### Milestone 3 — funnel + iterative loop + state (core) ✅ (2026-08-05)
+**Goal:** turn this from RAG into deep research.
+**Tasks:** `agent/state.py` (§5); `sources/*` (metadata-only discovery,
+a single `base.Source`); `agent/funnel.py` (discovery→triage→deep read,
+growing LanceDB on the fly); `agent/planner.py` (question→subquestions);
+`agent/loop.py` (for each open subquestion: retrieve → gap-check →
+follow up/discover more → until covered or out of budget). Gap-check:
+start with a heuristic (score threshold + subquestion coverage),
+optionally a bounded LLM yes/no.
+
+**Implemented:** `agent/state.py` (ResearchState/Candidate/Finding/Budget),
+`sources/base.py`+`arxiv.py`+`semantic_scholar.py`+`web.py` (arXiv and
+Semantic Scholar genuinely work without a key; web originally used
+Tavily/a key — replaced with local SearXNG, see the post-M4 update below),
+`agent/planner.py` (deterministic heuristic: compound questions are split
+on "?"/";"/"and also", otherwise one subquestion), `agent/funnel.py`
+(discovery → embedding-based triage top-N → deep read: PDF +
+`extract_pdf_sections` for arXiv, an honest fallback to the abstract for
+sources without full text), `agent/loop.py` (iterative controller with a
+growing `discovery_limit` on retry), `store/lancedb_store.py::
+add_chunks/has_source` (incremental upsert + cache hit), `cli.py research`.
+
+**Three real bugs/gaps found by running the code, not by guessing:**
+1. **Off-by-one in the iteration budget.** `state.iterations` was
+   incremented BEFORE the inner per-subquestion loop → `budget_exhausted()`
+   inside that same loop was tripped by that same increment, and the last
+   permitted pass always got wasted. Caught by a unit test on mocks
+   (`tests/test_loop.py`), fixed by incrementing after the pass.
+2. **arXiv/Semantic Scholar are English-language, subquestions are in
+   Russian.** A literal Russian query returned 0 results on the real API.
+   Added a bounded LLM translation of the subquestion into a short English
+   search query before discovery (`agent/funnel.py::_discovery_query`) —
+   extends the plan's allowance for "optional bounded LLM" beyond
+   gap-check, since without this the sources simply don't work for the
+   target (Russian-speaking) user.
+3. **Gap-check without a score threshold falsely "covered" irrelevant
+   subquestions.** The first version considered a subquestion covered by a
+   single criterion (≥2 distinct source_ids in the top-k), with no
+   relevance check — the plan explicitly required "score threshold +
+   coverage". On a real run, a topically adjacent but non-answering local
+   corpus about LLM quantization falsely "covered" a question about
+   KV-cache compression. Fix: gate on a calibrated reranker score
+   (`rerank.score(...) >= 0.5`) on top of the distinct-source count — reuse
+   the existing reranker instead of a separate LLM yes/no.
+
+**Done when:**
+- [x] on an open-ended question, the agent runs >1 iterations and finds
+      articles that weren't preloaded — real run (isolated index, a
+      question about KV-cache compression, `FUNNEL_TRIAGE_TOP_N=1` to force
+      multiple passes): 3 iterations, 20 real candidates from
+      arXiv/Semantic Scholar (none were in the local corpus), 44 findings
+- [x] `read_ids` genuinely deduplicates — one article is never read twice —
+      unit tests (`test_run_never_deep_reads_the_same_id_twice_across_calls`)
+      + a real run: a repeated `funnel.run` with an already-known id
+      touches the store not at all
+- [x] the loop always terminates on `budget`; the answer reflects any
+      remaining gaps — unit tests on mocks + a real run with a deliberately
+      unreachable coverage threshold: the loop stopped on `max_seconds`,
+      `state.gaps == [question]`, `synthesize()` receives the gaps and
+      honestly flags the uncovered part in the answer
+- [x] what's been read persists in LanceDB and gets reused by the next
+      question (cache hit) — real run: a second `loop.run()` call for the
+      same question against the same index — `iterations=1`, `read_ids`
+      empty, `candidates` empty — coverage came from the persistent index
+      with zero external requests
+**Not doing:** the eval layer, polish.
+
+### Milestone 4 — evaluation + packaging ✅ (2026-08-05)
+**Goal:** self-verification and showcase readiness.
+**Tasks:** `agent/evaluate.py` (faithfulness: every claim is derivable from
+its source; citation coverage: every claim has a `[n]`); wire into
+`loop.py` (low score → one more iteration within budget); optional figures
+via VLM Qwen; README + diagram + reproducibility.
+
+**Implemented:** `agent/evaluate.py` (citation coverage + faithfulness —
+faithfulness via the existing `providers/rerank.score_pairs`, not a
+separate NLI model or another LLM call: each cited claim gets its own
+query, a single reranker load/release for the whole answer);
+`providers/rerank.py::score_pairs` (a new function for different queries
+per pair, alongside `score`/`rerank`); `agent/loop.py` — once every
+subquestion is covered, a draft synthesis runs through `evaluate()`, and
+if faithfulness is below `EVAL_FAITHFULNESS_THRESHOLD` the subquestions
+reopen for exactly ONE more pass (not unlimited — otherwise a
+systematically weak index could burn the entire budget for nothing);
+`scripts/eval_faithfulness.py`.
+
+**Optional figures via VLM Qwen — not implemented** (marked "optional" in
+the tasks, deliberately out of scope: the project already juggles 3 models
+resident/on-demand, VLM figures aren't a critical showcase feature).
+
+**Done when:**
+- [x] faithfulness is computed and printed on reference questions —
+      `scripts/eval_faithfulness.py`, a real run over 8 questions: mean
+      citation coverage 0.59, mean faithfulness 0.75 (real numbers from
+      real models, not invented)
+- [x] found and demonstrated a case where the eval caught an unsupported
+      claim — **two independent cases**: (1) unit test
+      `test_catches_unsupported_claim` — a controlled injection of a made-up
+      fact ("whales have three hearts and breathe through gills"), correctly
+      caught by the eval; (2) a real run on a question about the numeric
+      recall improvement from hybrid retrieval — the model (honestly)
+      wrote a meta-claim about missing data, citing the range `[1]–[5]`,
+      and the eval flagged it unsupported (the reranker score fell below
+      threshold for any single source). The second case isn't a fabricated
+      fact but an honestly-found limitation of the method: the reranker
+      doesn't validate negations/meta-claims well against a single source.
+      Attempts to provoke a genuine fabricated number (asking for exact
+      GB/ms/seconds not present in the corpus) failed — the model honestly
+      answered "not in the context" every time, itself a good sign for
+      synthesis quality
+- [x] `README` lets you run the project from scratch; there's an
+      architecture diagram
+- [x] there's an honest quality metric on several reference questions —
+      see above, real numbers, not massaged
 
 ---
 
-## Пост-M4: веб-интерфейс (2026-08-05)
+## Post-M4: a working general web search (2026-08-05)
 
-По просьбе пользователя — удобный веб-интерфейс для `research`.
-Техстек: FastAPI + одна HTML-страница на чистом JS (без сборки, без
-Node/npm — совпадает с духом проекта, минимум зависимостей).
+All 4 plan milestones are closed, but `sources/web.py` from Milestone 3 was
+optional and never verified live (Tavily needs a key that wasn't available
+on this machine). Brought to a genuinely working state at the user's
+request.
 
-**Архитектура:** `agent/research_runner.py` — общая склейка
-`loop.run() → retrieve → synthesize`, вынесенная из `cli.py`, чтобы не
-дублировать между CLI и веб-слоем. `agent/progress.py` — общий тип
-колбэка прогресса (`ProgressCallback`), теперь `funnel.run()`/`loop.run()`
-принимают опциональный `on_progress`, который CLI не использует (просто
-печатает через `print`), а веб-интерфейс копит в список сообщений.
+**Confirmed by hand: neither free option without its own infrastructure
+works:**
+- DuckDuckGo HTML (`html.duckduckgo.com/html/`) — blocks automated
+  requests with a CAPTCHA challenge ("making sure you're not a bot",
+  `cc=botnet` in the response's tracking pixel). Working around this would
+  be bot-detection bypass — not doing that.
+- Public SearXNG instances (searx.be, priv.au, searx.tiekoetter.com,
+  search.inetol.net, baresearch.org, opnxng.com) — either `429 Too Many
+  Requests` almost immediately, or HTML-only (public instances disable the
+  JSON API by default against abuse), or their own bot-check.
 
-`src/web/app.py` (FastAPI) + `src/web/static/index.html`: один
-research()-прогон выполняется в фоновом потоке (может занимать минуты —
-реальные модели и внешние API), клиент опрашивает `GET /api/jobs/{id}`
-раз в секунду (без WebSocket/SSE — на одного локального пользователя это
-лишнее усложнение). Одновременно разрешён только один research()-прогон
-(§1: нельзя параллельно грузить несколько тяжёлых моделей на 16ГБ) —
-второй запрос, пока первый не завершён, отклоняется `409`.
+**Solution — a local SearXNG in Docker**, our own instance with no key and
+no limits: `docker-compose.yml` + `searxng/settings.yml`
+(`use_default_settings: true` + overriding `search.formats: [html, json]`,
+otherwise JSON is disabled in the default image too). A real gotcha: the
+`searxng/searxng` image listens on port **8080 inside the container**, not
+8888 (even though the default `settings.yml` says `server.port: 8888`, the
+actual uwsgi process in this image comes up on 8080) — `docker port` showed
+the `8888/tcp` mapping empty until `ports: ["8888:8080"]` was fixed in the
+compose file.
 
-`python -m src.cli serve` — запускает сервер (по умолчанию
-`127.0.0.1:8000`). 8 юнит-тестов на `TestClient` (offline, `run_research`
-замокан) — жизненный цикл job'а, 409 на параллельный запрос, отражение
-ошибки в статусе.
-
-**Реально проверено в браузере** (не только тестами): форма → создание
-job → live-прогресс ("Подвопросов: 1.", "Итерация 1…", "Ищем источники…",
-"Читаем: …") → готовый ответ с цитатами `[1]`–`[4]`, списком источников
-(LoRC paper и др.) и статистикой ("Итераций: 1 · прочитано источников: 3 ·
-найдено кандидатов: 5") на вопросе про сжатие KV-cache — тот же реальный
-прогон, что раньше гонялся только через CLI.
+`sources/web.py` was rewritten around
+`GET {SEARXNG_BASE_URL}/search?q=...&format=json` (no key). A real run of
+`loop.run()` on "what local embedded vector databases exist for Apple
+Silicon" (a topic where arXiv/Semantic Scholar are naturally empty — not a
+paper topic, tools/blogs instead): web found 5 candidates (GitHub repos,
+blog posts), 3 got read, the subquestion closed in 1 iteration — the
+source genuinely participates in the funnel alongside arXiv/Semantic
+Scholar.
 
 ---
 
-## Пост-M4: цитируемость в триаже + кликабельные ссылки (2026-08-06)
+## Post-M4: web UI (2026-08-05)
 
-По просьбе пользователя: (1) кликабельные ссылки на статьи и (2) учёт
-цитируемости при анализе кандидатов.
+At the user's request — a convenient web UI for `research`. Stack:
+FastAPI + a single plain-JS HTML page (no build step, no Node/npm —
+matches the project's spirit of minimal dependencies).
 
-**Источники цитируемости — реально проверено:** Semantic Scholar сам отдаёт
-`citationCount` при discovery (уже было). arXiv своей цитируемости не даёт —
-обогащение через **OpenAlex Works API** (`api.openalex.org`, без ключа,
-`cited_by_count` по заголовку) — `sources/citations.py`.
+**Architecture:** `agent/research_runner.py` — the shared
+`loop.run() → retrieve → synthesize` glue, pulled out of `cli.py` so the
+CLI and the web layer don't duplicate it. `agent/progress.py` — a shared
+progress-callback type (`ProgressCallback`); `funnel.run()`/`loop.run()`
+now take an optional `on_progress`, which the CLI doesn't use (it just
+prints via `print`), while the web UI accumulates it into a message list.
 
-**Реальный баг, найден на живом прогоне и исправлен:** обычный полнотекстовый
-параметр `search=` в OpenAlex ранжирует по общей релевантности, а не по
-похожести заголовка — на запрос `"The risk of KV cache compression"` (статья
-без цитирований, опубликована несколько недель назад) он вернул топ-1
-результатом **статью "XGBoost"** (50424 цитирования!) — заголовки вообще не
-похожи, просто общая лексика совпала. Обнаружено визуально в реальном ответе
-(`[2] The risk of KV cache compression (цитирований: 50424)` — физически
-невозможное число для новой статьи). Исправлено: `filter=title.search:...`
-(поиск конкретно по заголовку) + доп. проверка похожести заголовков
-(`difflib.SequenceMatcher`, порог 0.6) — если топ-результат недостаточно
-похож на запрошенный заголовок, возвращаем `None`, а не чужое число.
-Регрессионные тесты `test_lookup_rejects_mismatched_title_result` и
-`test_lookup_accepts_closely_matching_title` закрепляют оба случая.
-Подтверждено повторным реальным прогоном: та же статья теперь корректно
-показывает `цитирований: 0`.
+`src/web/app.py` (FastAPI) + `src/web/static/index.html`: a single
+`research()` run executes in a background thread (can take minutes — real
+models and external APIs), the client polls `GET /api/jobs/{id}` once a
+second (no WebSocket/SSE — unnecessary complexity for one local user).
+Only one `research()` run is allowed at a time (§1: can't load several
+heavy models concurrently on 16GB) — a second request while one is running
+gets rejected with `409`.
 
-**Использование в триаже:** `agent/funnel.py::_combined_score` — итоговый
-score = косинус (семантическая релевантность подвопросу) +
-`CITATION_BOOST_SCALE * log1p(citation_count)` (лог, не сырое число — иначе
-статья с тысячами цитирований задавила бы любую семантику; масштаб 0.03
-откалиброван так, что буст — тайбрейкер между близкими по смыслу
-кандидатами, не замена семантике). Юнит-тест
-`test_triage_citation_boost_can_flip_near_tied_ranking` подтверждает: при
-почти равном косинусе высокоцитируемый кандидат обгоняет менее цитируемого.
+`python -m src.cli serve` — starts the server (defaults to
+`127.0.0.1:8000`). 8 unit tests on `TestClient` (offline, `run_research`
+mocked) — job lifecycle, 409 on a concurrent request, error reflected in
+status.
 
-**Кликабельные ссылки:** `url` и `citation_count` теперь часть схемы
-LanceDB (`store/lancedb_store.py::Chunk`) и текут через весь пайплайн —
-discovery → триаж → deep read → чанк → retrieval → `agent/research_runner.py
-::SourceRef` → CLI (URL печатается под источником, большинство терминалов
-сами делают его кликабельным) и веб-интерфейс (настоящий `<a href>`,
-подтверждено вручную через `read_page` в браузере: `link "LoRC: ..." href=
+**Verified for real in the browser** (not just tests): form → job creation
+→ live progress ("Subquestions: 1.", "Iteration 1…", "Searching
+sources…", "Reading: …") → a finished answer with `[1]`–`[4]` citations, a
+source list (the LoRC paper and others), and stats ("Iterations: 1 ·
+sources read: 3 · candidates found: 5") on a KV-cache compression question
+— the same real run previously only exercised via the CLI.
+
+---
+
+## Post-M4: citation-aware triage + clickable links (2026-08-06)
+
+At the user's request: (1) clickable links to articles and (2) factoring
+citation counts into candidate analysis.
+
+**Citation sources — confirmed for real:** Semantic Scholar already
+reports `citationCount` at discovery time (already had this). arXiv
+doesn't give its own citation count — backfilled via the **OpenAlex Works
+API** (`api.openalex.org`, no key, `cited_by_count` by title) —
+`sources/citations.py`.
+
+**A real bug, found on a live run and fixed:** OpenAlex's plain
+full-text `search=` parameter ranks by general relevance, not title
+similarity — a query for `"The risk of KV cache compression"` (an
+uncited paper published a few weeks earlier) came back with the top hit
+being the **"XGBoost"** paper (50,424 citations!) — the titles aren't
+remotely alike, just some overlapping vocabulary. Discovered visually in a
+real answer (`[2] The risk of KV cache compression (citations: 50424)` —
+a physically impossible number for a brand-new paper). Fixed:
+`filter=title.search:...` (an actual title search) plus a title-similarity
+guard (`difflib.SequenceMatcher`, threshold 0.6) — if the top result isn't
+similar enough to the requested title, return `None` instead of someone
+else's number. Regression tests `test_lookup_rejects_mismatched_title_result`
+and `test_lookup_accepts_closely_matching_title` lock in both cases.
+Confirmed by a repeat real run: the same paper now correctly shows
+`citations: 0`.
+
+**Use in triage:** `agent/funnel.py::_combined_score` — the final score =
+cosine (semantic relevance to the subquestion) +
+`CITATION_BOOST_SCALE * log1p(citation_count)` (log-scaled, not raw —
+otherwise a paper with thousands of citations would drown out any
+semantics; the 0.03 scale is calibrated so the boost is a tie-breaker
+between similarly relevant candidates, not a substitute for semantics).
+Unit test `test_triage_citation_boost_can_flip_near_tied_ranking` confirms:
+with near-equal cosine scores, the more-cited candidate outranks the less-
+cited one.
+
+**Clickable links:** `url` and `citation_count` are now part of the
+LanceDB schema (`store/lancedb_store.py::Chunk`) and flow through the
+whole pipeline — discovery → triage → deep read → chunk → retrieval →
+`agent/research_runner.py::SourceRef` → the CLI (the URL is printed under
+the source, most terminals auto-link it) and the web UI (a real `<a href>`,
+confirmed by hand via `read_page` in the browser: `link "LoRC: ..." href=
 "https://arxiv.org/abs/2410.03111v1"`).
 
-**Реальная ловушка LanceDB-схемы, найдена и закреплена тестом:** сентинелы
-`url=""` / `citation_count=-1` вместо `None` — смешение `None`/`int` в одной
-колонке между разными вставками (`rebuild` начинает с `None`, `add_chunks`
-потом добавляет реальный `int`) даёт в LanceDB null-типизированную колонку,
-которая после падает с `Invalid input, cannot cast field ... from Int64 to
-Null` на первой попытке добавить настоящее число — проверено вручную,
-закреплено в `test_mixed_sentinel_and_real_citation_count_across_add_chunks`.
+**A real LanceDB schema gotcha, found and locked in by a test:** sentinels
+`url=""` / `citation_count=-1` instead of `None` — mixing `None`/`int` in
+one column across different inserts (`rebuild` starts with `None`,
+`add_chunks` later adds a real `int`) produces a null-typed column in
+LanceDB, which then fails with `Invalid input, cannot cast field ... from
+Int64 to Null` on the first attempt to add a real number — confirmed by
+hand, locked in by
+`test_mixed_sentinel_and_real_citation_count_across_add_chunks`.
 
 ---
 
-## Пост-M4: три бага из реального использования (2026-08-06)
+## Post-M4: three bugs from real usage (2026-08-06)
 
-Пользователь прислал реальный ответ веб-интерфейса на вопрос про "самые
-цитируемые статьи по AI агентам" — в источниках обнаружились три проблемы,
-все найдены и исправлены:
+The user sent a real web UI answer to a question about "the most-cited
+recent AI agent papers" — its sources revealed three problems, all found
+and fixed:
 
-1. **Дубли одной статьи под разными URL.** `[2508.11957]` встретился и как
-   `arxiv:2508.11957v1` (найдено `arxiv.py`), и отдельно как `web:<html-URL
-   той же статьи>` (найдено веб-поиском) — разные id, `state.add_candidates`
-   не увидел, что это один кандидат. Фикс: `agent/funnel.py::
-   _canonical_candidate_id` — любой arXiv id/URL (abs/html/pdf, с версией
-   или без, из любого источника, включая `externalIds.ArXiv` у Semantic
-   Scholar) нормализуется к `arxiv:<номер без версии>` ДО дедупа.
-2. **Страница-листинг как источник.** `arxiv.org/list/cs.AI/recent` (список
-   последних публикаций по категории, не отдельная статья) попала в
-   источники через веб-поиск. Фикс: `sources/web.py` фильтрует такие URL.
-3. **Demo-корпус пролезал в реальные ответы.** `research` и `ask` делили
-   одну LanceDB-таблицу — тестовая заметка `hybrid_retrieval_paper.md`
-   (для проверки Milestone 1) оказалась в источниках ответа про AI агентов,
-   просто потому что была в том же индексе и набрала проходной score.
-   Фикс: `config.RESEARCH_INDEX_TABLE` — отдельная таблица для `research`/
-   `serve`, `ask`/`index` остаются на локальном corpus/.
+1. **Duplicates of the same paper under different URLs.** `[2508.11957]`
+   showed up both as `arxiv:2508.11957v1` (found by `arxiv.py`) and
+   separately as `web:<html-URL of the same paper>` (found by web search)
+   — different ids, `state.add_candidates` never saw them as the same
+   candidate. Fix: `agent/funnel.py::_canonical_candidate_id` — any arXiv
+   id/URL (abs/html/pdf, versioned or not, from any source, including
+   Semantic Scholar's `externalIds.ArXiv`) gets normalized to
+   `arxiv:<version-less-id>` BEFORE dedup runs.
+2. **A listing page counted as a source.**
+   `arxiv.org/list/cs.AI/recent` (a browse page of recent publications by
+   category, not an individual article) ended up in the sources via web
+   search. Fix: `sources/web.py` filters such URLs.
+3. **The demo corpus leaked into real answers.** `research` and `ask`
+   shared one LanceDB table — a test fixture note,
+   `hybrid_retrieval_paper.md` (written to test Milestone 1), showed up as
+   a source in an answer about AI agents purely because it lived in the
+   same index and cleared the score threshold. Fix:
+   `config.RESEARCH_INDEX_TABLE` — a separate table for `research`/`serve`;
+   `ask`/`index` stay on the local `corpus/`.
 
-Все три подтверждены повторным реальным прогоном в браузере (`read_page`):
-на похожем вопросе про AI-агентов источники — три настоящие статьи/страницы
-по теме, без дублей, без листингов, без demo-корпуса.
+All three confirmed by a repeat real run in the browser (`read_page`): on
+a similar AI-agents question, the sources are three genuine on-topic
+articles/pages, no duplicates, no listing pages, no demo corpus.
 
 ---
 
-## Пост-M4: Tavily как предпочтительный веб-источник (2026-08-06)
+## Post-M4: Tavily as the preferred web source (2026-08-06)
 
-Пользователь спросил, почему `research` не ищет "по всему интернету".
-Реальная причина — проверено вручную по логам локального SearXNG-контейнера
-(`docker logs local-research-agent-searxng`), а не предположение:
+The user asked why `research` doesn't search "the whole internet". The
+real cause — confirmed by hand from the local SearXNG container's own logs
+(`docker logs local-research-agent-searxng`), not a guess:
 
 ```
 searx.engines.duckduckgo: CAPTCHA (wt-wt) (suspended_time=0)
 searx.engines.brave: Too many request (suspended_time=180)
 ```
 
-Из 83 включённых в SearXNG движков на практике надёжно отвечают в основном
-Google CSE и Wikipedia — DuckDuckGo даёт CAPTCHA и через локальный прокси
-(тот же класс проблемы, что уже находили с прямым DuckDuckGo HTML, см.
-Milestone 3), Brave — rate-limit. Это объясняет, почему покрытие веб-поиска
-на практике узкое (в основном tag/listing-страницы нескольких сайтов).
+Of 83 engines enabled in SearXNG, in practice only Google CSE and
+Wikipedia reliably respond — DuckDuckGo gets CAPTCHA-blocked even through
+the local proxy (the same class of problem already found with direct
+DuckDuckGo HTML, see Milestone 3), Brave rate-limits. This explains why
+web search coverage felt narrow in practice (mostly tag/listing pages from
+a handful of sites).
 
-Пользователь предоставил рабочий ключ **Tavily API** — управляемый поисковый
-сервис, без проблем с блокировками чужих движков. `sources/tavily.py`
-реализует тот же протокол `Source`, что и `sources/web.py` (SearXNG).
-`agent/research_runner.py::default_sources()` выбирает Tavily, если в
-окружении есть `TAVILY_API_KEY`, иначе — локальный SearXNG (оба варианта
-остаются рабочими и покрыты тестами).
+The user provided a working **Tavily API** key — a managed search service
+with no third-party engine reliability problems. `sources/tavily.py`
+implements the same `Source` protocol as `sources/web.py` (SearXNG).
+`agent/research_runner.py::default_sources()` picks Tavily if
+`TAVILY_API_KEY` is set in the environment, otherwise local SearXNG (both
+paths stay fully working and covered by tests).
 
-**Ключ — секрет, обращение особое:** записан в `.env` (добавлен в
-`.gitignore` ДО записи туда чего-либо, проверено `git check-ignore`),
-`config.py` подгружает `.env` через `python-dotenv` при импорте (не падает,
-если файла/пакета нет). `.env.example` — шаблон без реального значения,
-коммитится. Реальный ключ нигде в код/коммиты/этот файл не попадал.
+**The key is a secret, handled accordingly:** written to `.env` (added to
+`.gitignore` BEFORE anything was written there, confirmed with
+`git check-ignore`), `config.py` loads `.env` via `python-dotenv` at
+import time (no-op if the file/package is missing). `.env.example` is a
+committed template with no real value. The real key never made it into
+code/commits/this file.
 
-**Реально проверено в браузере** (не только тестами, с не закэшированным
-вопросом — иначе можно случайно проверить cache-hit вместо реального
-discovery): вопрос про "подходы к оценке галлюцинаций у языковых моделей"
-нашёл через Tavily источники с **PMC (PubMed Central), Nature.com, IEEE
-Xplore** — заметно шире и авторитетнее, чем прежние результаты через
-SearXNG (в основном tag-страницы TechCrunch/Medium/aiagentstore.ai).
+**Verified for real in the browser** (not just tests, with a non-cached
+question — otherwise you might accidentally verify a cache hit instead of
+real discovery): a question about "approaches to evaluating hallucinations
+in language models" surfaced sources via Tavily including **PMC (PubMed
+Central), Nature.com, IEEE Xplore** — noticeably broader and more
+authoritative than the earlier SearXNG-only results (mostly tag pages from
+TechCrunch/Medium/aiagentstore.ai).
 
 ---
 
-## Пост-M4: retry по faithfulness ничего не искал — force_discovery (2026-08-06)
+## Post-M4: faithfulness retry found nothing — force_discovery (2026-08-06)
 
-Пользователь получил на одном и том же вопросе про "самые цитируемые статьи
-по AI агентам" два прохода воронки, но `прочитано источников: 0, найдено
-кандидатов: 0` — цикл честно написал "Обоснованность низкая — собираем
-больше источников", но реально ничего не собрал.
+The user got two funnel passes on the same "most-cited AI agent papers"
+question, but `sources read: 0, candidates found: 0` — the loop honestly
+printed "Low faithfulness — gathering more sources" but genuinely gathered
+nothing.
 
-**Причина, найдена чтением `agent/loop.py`, не предположением:** к этому
-моменту в персистентной таблице `research_chunks` уже лежали чанки из
-нескольких МОИХ ЖЕ более ранних тестовых вопросов этой сессии (про AI
-агентов, KV-cache, галлюцинации LLM — 68 чанков, `source_id` проверены
-напрямую через `LanceDBStore._ensure_table().to_pandas()`). Retry
-переоткрывал подвопросы, но `_is_covered()` тут же снова смотрел в тот же
-индекс, видел прежний проходной score от старых чанков (TechCrunch/Medium/
-aiagentstore + случайно релевантный по эмбеддингу LoRC) и мгновенно
-"закрывал" подвопрос заново — `funnel.run()` (реальный discovery) при этом
-НИ РАЗУ не вызывался на retry-проходе. Строка-виновник:
-`if not _is_covered(store, sq): funnel.run(...)` — на retry `_is_covered`
-почти всегда снова True от той же самой персистентной выдачи.
+**Cause, found by reading `agent/loop.py`, not guessed:** by this point the
+persistent `research_chunks` table already held chunks from several of MY
+OWN earlier test questions in this session (about AI agents, KV-cache,
+LLM hallucinations — 68 chunks, `source_id`s confirmed directly via
+`LanceDBStore._ensure_table().to_pandas()`). The retry reopened the
+subquestions, but `_is_covered()` immediately looked at the same index
+again, saw the same passing score from the old chunks (TechCrunch/Medium/
+aiagentstore + an incidentally embedding-relevant LoRC) and instantly
+"covered" the subquestion again — `funnel.run()` (real discovery) was
+NEVER called on the retry pass at all. The culprit line:
+`if not _is_covered(store, sq): funnel.run(...)` — on retry, `_is_covered`
+almost always returns True again from the same persistent index.
 
-**Фикс:** `force_discovery` — булев флаг, `True` ровно на один проход сразу
-после срабатывания low-faithfulness retry, обходит проверку `_is_covered()`
-и гарантирует реальный вызов `funnel.run()`. Юнит-тест
-`test_loop_reopens_once_when_draft_is_not_faithful` инвертирован (раньше
-ошибочно проверял, что `funnel.run` НЕ вызывается на retry — это и была
-закреплённая тестом версия бага).
+**Fix:** `force_discovery` — a boolean flag, `True` for exactly one pass
+right after a low-faithfulness retry triggers, bypasses the
+`_is_covered()` check and guarantees a real call to `funnel.run()`. Unit
+test `test_loop_reopens_once_when_draft_is_not_faithful` inverted (it used
+to wrongly assert `funnel.run` is NOT called on retry — that assertion
+was literally the bug, codified as a test).
 
-**Подтверждено реальным прогоном** (детерминированно, `_draft_is_faithful`
-форсирован в `False` на первом черновике, чтобы гарантированно попасть на
-retry — иначе стохастика LLM делает retry ненадёжным для ручной проверки):
-после "Обоснованность низкая — собираем больше источников" на итерации 2
-теперь реально видно "Ищем источники…" → "Найдено 8 кандидатов, 3 прошли
-триаж" → 3 новые статьи прочитаны через Tavily, включая настоящую статью
+**Confirmed by a real run** (deterministically, `_draft_is_faithful` forced
+to `False` on the first draft to guarantee hitting the retry path —
+otherwise LLM stochasticity makes the retry unreliable to verify by hand):
+after "Low faithfulness — gathering more sources", iteration 2 now
+genuinely shows "Searching sources…" → "Found 8 candidates, 3 passed
+triage" → 3 new articles read via Tavily, including the actual paper
 `[2508.11957] A Comprehensive Review of AI Agents`.
 
 ---
 
-## Пост-M4: более широкий поиск по запросу пользователя (2026-08-06)
+## Post-M4: wider search at the user's request (2026-08-06)
 
-Пользователь попросил более агрессивный/широкий поиск в `research`.
-Изменения в `config.py` (все параметры конфигурируемые, не переписан код
-воронки):
+The user asked for more aggressive/broader search in `research`. Changes
+in `config.py` (config-only, no funnel code rewrite):
 
-| Параметр | Было | Стало |
+| Parameter | Before | After |
 |---|---|---|
 | `FUNNEL_DISCOVERY_LIMIT_PER_SOURCE` | 5 | 10 |
 | `FUNNEL_TRIAGE_TOP_N` | 3 | 6 |
@@ -415,32 +590,45 @@ retry — иначе стохастика LLM делает retry ненадёж�
 | `DEFAULT_BUDGET_MAX_DEEP_READS` | 10 | 20 |
 | `DEFAULT_BUDGET_MAX_SECONDS` | 120 | 240 |
 
-Более высокая планка `FUNNEL_MIN_SOURCES_TO_COVER` (2→3) не только "шире
-ищет", но и попутно снижает шанс повторения бага из предыдущего раздела —
-чем больше разных источников нужно для "покрытия", тем реже пары старых
-чанков из персистентного индекса достаточно, чтобы избежать нового
-discovery.
+The higher `FUNNEL_MIN_SOURCES_TO_COVER` bar (2→3) doesn't just "search
+wider" — it also incidentally lowers the odds of repeating the bug from
+the previous section: the more distinct sources are needed for
+"coverage", the less often a couple of stale chunks already in the
+persistent index are enough to skip a new discovery pass.
 
-**Подтверждено реальным прогоном** (вопрос "методы сжатия нейросетевых
-моделей помимо квантования", не задавался раньше — честная проверка, не
-кэш-хит): **19 найденных кандидатов, 6 прочитано** (типичные прежние числа
-были ~5-15 кандидатов, 3 прочитано) — реальный, разнообразный микс web
-(SoftServe, Xailient, PMC survey, GitHub awesome-list) и Semantic Scholar
-результатов.
-
----
-
-## 7. Конвенции для Claude Code (в CLAUDE.md)
-
-- **Инкрементально.** Один милестон за запуск. После — стоп, показать diff, дождаться ревью. Не забегать вперёд.
-- **`# ARCH-Q:`** — все непроверенные на железе допущения (устройство MPS, вызов MLX-провайдера, hybrid-API LanceDB, пики памяти) помечать этим маркером, не молча угадывать.
-- **Провайдер-швы.** Внешние зависимости (LLM, embed, rerank, источники) — за тонкими интерфейсами. Никаких прямых вызовов SDK из логики агента.
-- **Тесты офлайн и быстрые.** LLM/эмбеддинги в тестах мокать. Юнит-тесты: чанкинг, переходы `ResearchState`, дедуп `read_ids`, стоп по бюджету, слияние hybrid. Один интеграционный smoke-тест end-to-end на крошечном корпусе.
-- **Память — гражданин первого класса.** Где грузятся/освобождаются модели — комментировать. LLM — один инстанс на процесс; реранкер — по требованию; двух резидентных моделей одновременно не держать. Обработка корпуса — генераторами.
-- **Мелкие коммиты** по задачам, тайп-хинты, докстринги на публичных функциях.
+**Confirmed by a real run** (question: "neural network model compression
+methods besides quantization", never asked before — a genuine check, not a
+cache hit): **19 candidates found, 6 read** (typical earlier numbers were
+~5-15 candidates, 3 read) — a real, diverse mix of web (SoftServe,
+Xailient, a PMC survey, a GitHub awesome-list) and Semantic Scholar
+results.
 
 ---
 
-## 8. Стартовая команда для Claude Code
+## 7. Conventions for Claude Code (in CLAUDE.md)
 
-> Прочитай `DEVELOPMENT_PLAN.md` и `CLAUDE.md`. Реализуй **только Milestone 0**. Придерживайся §1 (жёсткие ограничения) и §7 (конвенции). Где нужно допущение о железе — ставь `# ARCH-Q:` вместо догадки. Останови работу после Milestone 0 и покажи diff и как запустить.
+- **Incrementally.** One milestone per run. Then stop, show the diff, wait
+  for review. Don't get ahead of yourself.
+- **`# ARCH-Q:`** — mark every assumption that can't be verified without
+  the real hardware (MPS device, MLX provider call, LanceDB hybrid API,
+  memory peaks) with this marker instead of silently guessing.
+- **Provider seams.** External dependencies (LLM, embed, rerank, sources)
+  live behind thin interfaces. No direct SDK calls from agent logic.
+- **Tests offline and fast.** Mock the LLM/embeddings in tests. Unit
+  tests: chunking, `ResearchState` transitions, `read_ids` dedup, budget
+  stop, hybrid merge. One end-to-end integration smoke test on a tiny
+  corpus.
+- **Memory is a first-class citizen.** Comment where models load/release.
+  LLM — one instance per process; reranker — on demand; never hold two
+  resident models at once. Process the corpus with generators.
+- **Small commits** per task, type hints and docstrings on public
+  functions.
+
+---
+
+## 8. Starting prompt for Claude Code
+
+> Read `DEVELOPMENT_PLAN.md` and `CLAUDE.md`. Implement **only Milestone
+> 0**. Follow §1 (hard constraints) and §7 (conventions). Where a
+> hardware assumption is needed, mark it `# ARCH-Q:` instead of guessing.
+> Stop after Milestone 0 and show the diff and how to run it.
