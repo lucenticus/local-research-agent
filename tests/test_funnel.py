@@ -333,6 +333,82 @@ def test_discover_produces_matching_canonical_ids_for_same_paper():
     assert [c.id for c in candidates] == ["arxiv:2508.11957", "arxiv:2508.11957"]
 
 
+class _FakeMCPTool:
+    def __init__(self, text=None, raise_error=False):
+        self._text = text
+        self._raise_error = raise_error
+        self.calls = []
+
+    def invoke(self, kwargs):
+        self.calls.append(kwargs)
+        if self._raise_error:
+            raise RuntimeError("mcp server down")
+        return [{"type": "text", "text": self._text}]
+
+
+def _reset_mcp_fetch_cache(monkeypatch):
+    monkeypatch.setattr(funnel, "_mcp_fetch_tool", "unset")
+
+
+def test_deep_read_ignores_mcp_fetch_when_disabled(monkeypatch):
+    _reset_mcp_fetch_cache(monkeypatch)
+    monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", False)
+    monkeypatch.setattr(
+        funnel, "get_mcp_tools",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("MCP must not be reached when disabled")),
+    )
+    candidate = Candidate(id="a", source="web", title="T", abstract="short abstract", meta={"url": "https://x/y"})
+
+    sections = funnel._deep_read_sections(candidate)
+    assert sections == [funnel.Section(name="T", category="abstract", text="short abstract")]
+
+
+def test_deep_read_uses_mcp_fetch_full_text_when_enabled(monkeypatch):
+    _reset_mcp_fetch_cache(monkeypatch)
+    monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", True)
+    fake_tool = _FakeMCPTool(text="full page body, much longer than the abstract")
+    monkeypatch.setattr(funnel, "get_mcp_tools", lambda connections: [fake_tool_with_name(fake_tool)])
+    candidate = Candidate(id="a", source="web", title="T", abstract="short abstract", meta={"url": "https://x/y"})
+
+    sections = funnel._deep_read_sections(candidate)
+    assert sections == [
+        funnel.Section(name="T", category="body", text="full page body, much longer than the abstract")
+    ]
+    assert fake_tool.calls == [{"url": "https://x/y", "max_length": funnel.config.MCP_FETCH_MAX_CHARS}]
+
+
+def test_deep_read_falls_back_to_abstract_when_mcp_fetch_fails(monkeypatch):
+    _reset_mcp_fetch_cache(monkeypatch)
+    monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", True)
+    fake_tool = _FakeMCPTool(raise_error=True)
+    monkeypatch.setattr(funnel, "get_mcp_tools", lambda connections: [fake_tool_with_name(fake_tool)])
+    candidate = Candidate(id="a", source="web", title="T", abstract="short abstract", meta={"url": "https://x/y"})
+
+    sections = funnel._deep_read_sections(candidate)
+    assert sections == [funnel.Section(name="T", category="abstract", text="short abstract")]
+
+
+def test_get_mcp_fetch_tool_only_lists_tools_once(monkeypatch):
+    _reset_mcp_fetch_cache(monkeypatch)
+    monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", True)
+    calls = {"n": 0}
+
+    def fake_get_mcp_tools(connections):
+        calls["n"] += 1
+        return [fake_tool_with_name(_FakeMCPTool(text="x"))]
+
+    monkeypatch.setattr(funnel, "get_mcp_tools", fake_get_mcp_tools)
+
+    funnel._get_mcp_fetch_tool()
+    funnel._get_mcp_fetch_tool()
+    assert calls["n"] == 1
+
+
+def fake_tool_with_name(fake_tool):
+    fake_tool.name = "fetch"
+    return fake_tool
+
+
 def test_run_dedups_same_arxiv_paper_found_via_multiple_sources(monkeypatch):
     """Регрессия на реальный баг (2026-08-06): одна и та же статья находилась
     и через arxiv.py, и через веб-поиск (html-версия) с разными id и

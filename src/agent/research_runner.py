@@ -14,9 +14,12 @@ from .. import config
 from ..providers import rerank
 from ..sources.arxiv import ArxivSource
 from ..sources.base import Source
+from ..sources.crossref import CrossrefSource
+from ..sources.github_mcp import GitHubMCPSource
 from ..sources.semantic_scholar import SemanticScholarSource
 from ..sources.tavily import TavilySource
 from ..sources.web import WebSource
+from ..sources.wikipedia import WikipediaSource
 from ..store.lancedb_store import LanceDBStore, document_to_hit
 from . import funnel, loop
 from .progress import ProgressCallback
@@ -69,9 +72,23 @@ def default_sources() -> list[Source]:
     иначе локальный SearXNG (sources/web.py) — работает без ключа, но упирается
     в блокировки части движков на стороне их провайдеров (проверено вручную
     2026-08-06). Оба реализуют один и тот же протокол `Source`, funnel.py не
-    видит разницы."""
+    видит разницы.
+
+    CrossRef и Wikipedia — тоже без ключа, дополняют arXiv/Semantic Scholar
+    непрепринтными журнальными публикациями (CrossRef, реальный
+    `is-referenced-by-count`) и энциклопедическим/справочным контекстом
+    (Wikipedia) для подвопросов, которые чисто научные источники не
+    покрывают.
+
+    GitHub (через MCP, sources/github_mcp.py) — опционально
+    (config.GITHUB_MCP_ENABLED, по умолчанию выключен + нужен
+    GITHUB_PERSONAL_ACCESS_TOKEN) — поиск по репозиториям для подвопросов
+    про конкретную библиотеку/инструмент."""
     web_source: Source = TavilySource() if os.environ.get("TAVILY_API_KEY") else WebSource()
-    return [ArxivSource(), SemanticScholarSource(), web_source]
+    sources: list[Source] = [ArxivSource(), SemanticScholarSource(), CrossrefSource(), WikipediaSource(), web_source]
+    if config.GITHUB_MCP_ENABLED and os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN"):
+        sources.append(GitHubMCPSource())
+    return sources
 
 
 def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
@@ -92,7 +109,7 @@ def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
     return hits
 
 
-def _unique_sources(hits: list[dict[str, Any]]) -> list[SourceRef]:
+def unique_sources(hits: list[dict[str, Any]]) -> list[SourceRef]:
     """Дедуп по заголовку + ссылка/цитируемость для рендера (CLI-текст,
     кликабельная ссылка в веб-интерфейсе). `citation_count == -1` — сентинел
     LanceDB "неизвестно" (см. store/lancedb_store.py), превращаем в None —
@@ -151,7 +168,7 @@ def run_research(
 
     return ResearchResult(
         answer=answer,
-        sources=_unique_sources(hits),
+        sources=unique_sources(hits),
         candidates=_candidate_summaries(state),
         gaps=state.gaps,
         iterations=state.iterations,
@@ -188,7 +205,7 @@ def run_followup(
 
     return ResearchResult(
         answer=answer,
-        sources=_unique_sources(hits),
+        sources=unique_sources(hits),
         candidates=_candidate_summaries(state),
         gaps=state.gaps,
         iterations=state.iterations,

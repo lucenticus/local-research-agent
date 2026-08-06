@@ -6,13 +6,13 @@ from src.agent import research_runner
 from src.agent.state import Candidate, ResearchState
 
 
-def test_unique_sources_dedups_by_title_and_normalizes_citation_sentinel():
+def testunique_sources_dedups_by_title_and_normalizes_citation_sentinel():
     hits = [
         {"source_title": "A", "url": "https://a", "citation_count": 5},
         {"source_title": "A", "url": "https://a-dup", "citation_count": 999},
         {"source_title": "B", "url": "", "citation_count": -1},
     ]
-    refs = research_runner._unique_sources(hits)
+    refs = research_runner.unique_sources(hits)
     assert [r.title for r in refs] == ["A", "B"]
     assert refs[0].citation_count == 5
     assert refs[1].citation_count is None  # -1 сентинел LanceDB -> None

@@ -4,9 +4,12 @@ Discovery дёшево (только метаданные, все источни
 abstract кандидатов против подвопроса эмбеддингом и оставляет top-N — большая
 часть кандидатов умирает здесь, полный текст не качается. Deep read — только
 для выживших и ещё не прочитанных (`state.read_ids`): для arXiv скачивается
-PDF и извлекается секция-осознанно, для остальных источников (без открытого
-полного текста) используется сам abstract как единственный chunk — честный
-fallback, а не притворство, что full-text недоступен.
+PDF и извлекается секция-осознанно; для остальных источников (без открытого
+PDF) — полный текст страницы через MCP fetch-сервер
+(`config.MCP_FETCH_ENABLED`, по умолчанию выключен — отдельный процесс
+uvx/npx, см. README), а если и это недоступно/выключено — сам abstract как
+единственный chunk, честный fallback, а не притворство, что full-text
+недоступен.
 
 Найдено реальным прогоном 2026-08-05: arXiv/Semantic Scholar — англоязычные
 корпуса, подвопрос на русском (а агент по умолчанию русскоязычный) даёт 0
@@ -43,10 +46,12 @@ import tempfile
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Any
 from .. import config
 from ..ingest.chunk import chunk_sections, chunk_text
 from ..ingest.extract import Section, extract_pdf_sections
 from ..providers import embed, llm
+from ..providers.mcp_client import content_to_text, get_mcp_tools
 from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
@@ -176,6 +181,47 @@ def _fetch_pdf_sections(pdf_url: str) -> list[Section]:
         tmp_path.unlink(missing_ok=True)
 
 
+# Кэшируется на модуль (не на вызов) — get_mcp_tools() делает отдельный
+# connect/list_tools/disconnect round-trip (см. providers/mcp_client.py),
+# незачем платить его на каждый прочитанный кандидат. Сентинел "unset"
+# отличает "ещё не пробовали" от "пробовали, сервер недоступен" — во втором
+# случае не долбим uvx/сеть повторно на каждом кандидате воронки.
+_mcp_fetch_tool: Any = "unset"
+
+
+def _get_mcp_fetch_tool() -> Any:
+    global _mcp_fetch_tool
+    if _mcp_fetch_tool == "unset":
+        try:
+            connections = {
+                "fetch": {
+                    "transport": "stdio",
+                    "command": config.MCP_FETCH_COMMAND,
+                    "args": config.MCP_FETCH_ARGS,
+                }
+            }
+            tools = get_mcp_tools(connections)
+            _mcp_fetch_tool = next((t for t in tools if t.name == "fetch"), None)
+        except Exception:
+            _mcp_fetch_tool = None
+    return _mcp_fetch_tool
+
+
+def _fetch_page_text_via_mcp(url: str) -> str | None:
+    """Full page text via the MCP fetch server (mcp-server-fetch) — richer
+    than the abstract-only fallback for non-PDF sources (web/Tavily
+    results). Best-effort like `_fetch_pdf_sections`: any failure (server
+    not installed, network, timeout) just returns None."""
+    tool = _get_mcp_fetch_tool()
+    if tool is None:
+        return None
+    try:
+        result = tool.invoke({"url": url, "max_length": config.MCP_FETCH_MAX_CHARS})
+        return content_to_text(result).strip() or None
+    except Exception:
+        return None
+
+
 def _deep_read_sections(candidate: Candidate) -> list[Section]:
     pdf_url = candidate.meta.get("pdf_url")
     if pdf_url:
@@ -184,10 +230,18 @@ def _deep_read_sections(candidate: Candidate) -> list[Section]:
             if sections:
                 return sections
         except Exception:
-            pass  # источник недоступен -> fallback на abstract ниже
-    # Нет полного текста (Semantic Scholar/web без PDF, или скачивание не
-    # удалось) — честно используем сам abstract как единственный chunk, а не
-    # притворяемся, что deep read сделан на полном тексте.
+            pass  # источник недоступен -> fallback ниже
+
+    url = candidate.meta.get("url")
+    if url and config.MCP_FETCH_ENABLED:
+        text = _fetch_page_text_via_mcp(url)
+        if text:
+            return [Section(name=candidate.title, category="body", text=text)]
+
+    # Нет полного текста (Semantic Scholar/web без PDF, MCP fetch выключен/
+    # недоступен, или скачивание не удалось) — честно используем сам
+    # abstract как единственный chunk, а не притворяемся, что deep read
+    # сделан на полном тексте.
     return [Section(name=candidate.title, category="abstract", text=candidate.abstract)]
 
 

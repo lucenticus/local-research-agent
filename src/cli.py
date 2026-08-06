@@ -10,8 +10,9 @@ from . import config
 from .agent.research_runner import ResearchResult, retrieve, run_followup, run_research
 from .agent.synthesize import synthesize
 from .ingest.chunk import chunk_sections
-from .ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
+from .ingest.extract import Section, extract_html_sections, extract_pdf_sections, extract_sections
 from .providers import embed
+from .providers.mcp_client import content_to_text, get_mcp_tools
 from .store.lancedb_store import Chunk, LanceDBStore
 
 _SECTION_EXTRACTORS = {
@@ -22,6 +23,20 @@ _SECTION_EXTRACTORS = {
     ".pdf": lambda path: extract_pdf_sections(path),
 }
 
+# Текстовые (не PDF) расширения, доступные через MCP filesystem-сервер
+# (см. _iter_mcp_files) — extract_pdf_sections открывает PDF через PyMuPDF
+# по реальному пути на диске, а MCP filesystem-сервер отдаёт содержимое
+# файла текстом/base64 по сети MCP-протокола, не пишет временный файл;
+# делать этот temp-file round-trip для PDF, как funnel.py делает для
+# скачанных статей, здесь пока не стали — не тот случай использования
+# (PDF из MCP-директории проще прочитать напрямую с диска, чем через MCP).
+_MCP_TEXT_EXTRACTORS = {
+    ".txt": extract_sections,
+    ".md": extract_sections,
+    ".html": extract_html_sections,
+    ".htm": extract_html_sections,
+}
+
 
 def _iter_corpus_files(corpus_dir: Path):
     """Генератор путей — не держим список файлов/содержимое корпуса разом (§1)."""
@@ -30,29 +45,67 @@ def _iter_corpus_files(corpus_dir: Path):
             yield path
 
 
+def _iter_mcp_files(root_dir: str):
+    """Находит и читает `.txt`/`.md`/`.html`/`.htm`-файлы под `root_dir` через
+    MCP filesystem-сервер (`@modelcontextprotocol/server-filesystem`,
+    запускается на лету через `npx`) — даёт `index` забирать документы из
+    ЛЮБОЙ директории на диске, а не только из `corpus/`, без правки
+    config.py под каждую новую директорию. Рекурсивно (search_files сам
+    обходит поддиректории)."""
+    connections = {
+        "fs": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", root_dir],
+        }
+    }
+    tools = {t.name: t for t in get_mcp_tools(connections)}
+    search_tool, read_tool = tools["search_files"], tools["read_text_file"]
+
+    seen: set[str] = set()
+    for ext in _MCP_TEXT_EXTRACTORS:
+        matches = content_to_text(search_tool.invoke({"path": root_dir, "pattern": f"*{ext}"})).strip()
+        if not matches or matches.lower() == "no matches found":  # confirmed real server response
+            continue
+        for file_path in (line.strip() for line in matches.splitlines()):
+            if not file_path or file_path in seen:
+                continue
+            seen.add(file_path)
+            text = content_to_text(read_tool.invoke({"path": file_path}))
+            yield file_path, ext, text
+
+
+def _chunks_from_sections(sections: list[Section], source_id: str, source_title: str) -> list[Chunk]:
+    raw_chunks = chunk_sections(sections)
+    if not raw_chunks:
+        return []
+    vectors = embed.embed_texts([c.text for c in raw_chunks])
+    return [
+        Chunk(
+            id=str(uuid.uuid4()), text=raw.text, source_id=source_id,
+            source_title=source_title, section=raw.section, vector=vector,
+        )
+        for raw, vector in zip(raw_chunks, vectors, strict=True)
+    ]
+
+
 def cmd_index(args: argparse.Namespace) -> None:
     corpus_dir = Path(args.corpus_dir)
     store = LanceDBStore()
     all_chunks: list[Chunk] = []
     for path in _iter_corpus_files(corpus_dir):
         sections = _SECTION_EXTRACTORS[path.suffix.lower()](path)
-        raw_chunks = chunk_sections(sections)
-        if not raw_chunks:
-            continue
-        vectors = embed.embed_texts([c.text for c in raw_chunks])
-        for raw, vector in zip(raw_chunks, vectors, strict=True):
-            all_chunks.append(
-                Chunk(
-                    id=str(uuid.uuid4()),
-                    text=raw.text,
-                    source_id=path.name,
-                    source_title=path.stem,
-                    section=raw.section,
-                    vector=vector,
-                )
-            )
+        all_chunks.extend(_chunks_from_sections(sections, source_id=path.name, source_title=path.stem))
+
+    for mcp_dir in args.mcp_dirs:
+        for file_path, ext, text in _iter_mcp_files(mcp_dir):
+            sections = _MCP_TEXT_EXTRACTORS[ext](text)
+            title = Path(file_path).stem
+            all_chunks.extend(_chunks_from_sections(sections, source_id=file_path, source_title=title))
+
     store.rebuild(all_chunks)
-    print(f"Индекс построен: {len(all_chunks)} чанков из {corpus_dir}")
+    print(f"Индекс построен: {len(all_chunks)} чанков из {corpus_dir}"
+          + (f" + {len(args.mcp_dirs)} MCP-директори{'й' if len(args.mcp_dirs) != 1 else 'и'}" if args.mcp_dirs else ""))
 
 
 def _format_source_line(index: int, title: str, url: str = "", citation_count: int | None = None) -> str:
@@ -183,6 +236,15 @@ def cmd_serve(args: argparse.Namespace) -> None:
     uvicorn.run("src.web.app:app", host=args.host, port=args.port, reload=False)
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> None:
+    """MCP-сервер (stdio) — ask()/research() как MCP-инструменты для
+    любого MCP-клиента (Claude Code, Claude Desktop и т.п.), см.
+    src/mcp_server.py."""
+    from .mcp_server import serve
+
+    serve()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="research-agent")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -190,6 +252,11 @@ def main() -> None:
     p_index = sub.add_parser("index", help="Построить индекс из corpus/")
     p_index.add_argument(
         "--corpus-dir", default=str(config.CORPUS_DIR), dest="corpus_dir"
+    )
+    p_index.add_argument(
+        "--mcp-dir", action="append", default=[], dest="mcp_dirs",
+        help="Дополнительная директория (любая на диске) — читается через MCP "
+             "filesystem-сервер (npx), не только corpus/. Можно указать несколько раз.",
     )
     p_index.set_defaults(func=cmd_index)
 
@@ -207,6 +274,11 @@ def main() -> None:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.set_defaults(func=cmd_serve)
+
+    p_mcp_serve = sub.add_parser(
+        "mcp-serve", help="Запустить MCP-сервер (stdio) — ask/research как MCP-инструменты"
+    )
+    p_mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     args = parser.parse_args()
     args.func(args)

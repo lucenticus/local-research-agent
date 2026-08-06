@@ -30,7 +30,7 @@ def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
     # склейку cli -> rerank -> synthesize, поэтому мокаем на уровне публичной функции.
     monkeypatch.setattr(rerank, "rerank", lambda query, candidates, top_n: candidates[:top_n])
 
-    cli.cmd_index(argparse.Namespace(corpus_dir=str(corpus_dir)))
+    cli.cmd_index(argparse.Namespace(corpus_dir=str(corpus_dir), mcp_dirs=[]))
     index_out = capsys.readouterr().out
     assert "Индекс построен: 1 чанков" in index_out
 
@@ -38,3 +38,41 @@ def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
     ask_out = capsys.readouterr().out
     assert "Кит — млекопитающее [1]." in ask_out
     assert "[1] doc1" in ask_out
+
+
+class _FakeMCPTool:
+    def __init__(self, responses):
+        self._responses = responses  # {frozenset(kwargs.items()): result}
+
+    def invoke(self, kwargs):
+        return self._responses[frozenset(kwargs.items())]
+
+
+def test_index_pulls_extra_docs_via_mcp_filesystem_server(tmp_path, monkeypatch, capsys):
+    """`--mcp-dir` — MCP filesystem-сервер замокан офлайн (search_files +
+    read_text_file), реальный npx-процесс не поднимается."""
+    monkeypatch.setattr(config, "INDEX_DIR", tmp_path / "lancedb")
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+
+    search_tool = _FakeMCPTool(
+        {
+            frozenset({"path": "/notes", "pattern": "*.txt"}.items()): "no matches found",
+            frozenset({"path": "/notes", "pattern": "*.md"}.items()): "/notes/whales.md",
+            frozenset({"path": "/notes", "pattern": "*.html"}.items()): "No matches found",
+            frozenset({"path": "/notes", "pattern": "*.htm"}.items()): "No matches found",
+        }
+    )
+    search_tool.name = "search_files"
+    read_tool = _FakeMCPTool(
+        {frozenset({"path": "/notes/whales.md"}.items()): [{"type": "text", "text": "Киты живут в океане."}]}
+    )
+    read_tool.name = "read_text_file"
+
+    monkeypatch.setattr(cli, "get_mcp_tools", lambda connections: [search_tool, read_tool])
+    monkeypatch.setattr(embed, "embed_texts", lambda texts: [[float(len(t))] for t in texts])
+
+    cli.cmd_index(argparse.Namespace(corpus_dir=str(corpus_dir), mcp_dirs=["/notes"]))
+    out = capsys.readouterr().out
+    assert "Индекс построен: 1 чанков" in out
+    assert "1 MCP-директории" in out

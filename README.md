@@ -1,9 +1,12 @@
 # local-research-agent
 
 A local deep-research agent that runs entirely on-device (MacBook M4 Air,
-16GB, MLX). It searches arXiv, Semantic Scholar, and the general web
-(Tavily or a local SearXNG instance), reads and cites what it finds, and
-self-checks its own answers before returning them.
+16GB, MLX). It searches arXiv, Semantic Scholar, CrossRef, Wikipedia, and
+the general web (Tavily or a local SearXNG instance), reads and cites what
+it finds, and self-checks its own answers before returning them. It can
+also reach further via MCP servers (page fetching, arbitrary local
+directories), and it exposes itself as an MCP server so other MCP clients
+can call it as a tool.
 
 The standing engineering rules (memory constraints, provider-seam
 convention, test policy) live in [CLAUDE.md](CLAUDE.md). This file
@@ -24,6 +27,8 @@ python -m src.cli research "What approaches exist for KV-cache compression in tr
 
 python -m src.cli serve   # web UI at http://127.0.0.1:8000
 
+python -m src.cli mcp-serve   # MCP server (stdio): exposes ask/research as tools
+
 uv run pytest -q
 ```
 
@@ -32,13 +37,18 @@ uv run pytest -q
 ```mermaid
 flowchart TB
     browser(["browser"])
+    mcpclient(["MCP client<br/>(Claude Code, etc.)"])
 
     subgraph web["web/app.py (serve)"]
         fastapi["FastAPI: background job<br/>+ polling"]
     end
 
+    subgraph mcpsrv["mcp_server.py (mcp-serve)"]
+        mcptools["ask() / research()<br/>as MCP tools, stdio"]
+    end
+
     subgraph cli["cli.py"]
-        index["index"]
+        index["index (+ --mcp-dir)"]
         ask["ask"]
         research["research"]
     end
@@ -77,22 +87,33 @@ flowchart TB
     subgraph sources["sources/ (metadata only)"]
         arxiv["arxiv.py"]
         s2["semantic_scholar.py"]
+        crossref["crossref.py"]
+        wikipedia["wikipedia.py"]
         websearch["web.py / tavily.py<br/>(SearXNG or Tavily, see below)"]
         tools["langchain_tools.py<br/>StructuredTool per source"]
     end
 
+    subgraph mcp["providers/mcp_client.py<br/>(sync bridge, see below)"]
+        mcpfetch["mcp-server-fetch<br/>(deep-read fallback)"]
+        mcpfs["MCP filesystem server<br/>(index --mcp-dir)"]
+    end
+
     browser <--> fastapi
+    mcpclient <--> mcptools
     fastapi --> runner
+    mcptools --> runner
     research --> runner
     runner --> loop
     runner --> synth
 
     index --> ingest --> lance
     index --> embed
+    index -.-> mcpfs
     ask --> lance & rerank & synth
     lance --> lcembed
     loop --> planner & funnel & synth & eval
     funnel --> tools --> sources
+    funnel -.-> mcpfetch
     funnel --> ingest
     funnel --> lance
     loop --> lance
@@ -151,19 +172,25 @@ of only searching a pre-built index:
 
 - `agent/state.py` — `ResearchState`: subquestions, candidates, `read_ids`,
   findings, budget.
-- `sources/arxiv.py`, `sources/semantic_scholar.py`, `sources/web.py` /
-  `sources/tavily.py` — metadata-only discovery. arXiv and Semantic Scholar
-  work without a key; the web source picks Tavily if `TAVILY_API_KEY` is
-  set, otherwise falls back to a local SearXNG instance (see below).
+- `sources/arxiv.py`, `sources/semantic_scholar.py`, `sources/crossref.py`,
+  `sources/wikipedia.py`, `sources/web.py` / `sources/tavily.py` —
+  metadata-only discovery, all keyless except the web source. arXiv/
+  Semantic Scholar cover preprints, CrossRef adds published/journal work
+  (real citation counts via `is-referenced-by-count`), Wikipedia covers
+  general/background subquestions the others don't. The web source picks
+  Tavily if `TAVILY_API_KEY` is set, otherwise falls back to a local
+  SearXNG instance (see below).
 - `agent/planner.py` — question → subquestions via a deterministic
   heuristic, not an LLM call (small local models are unreliable
   multi-step planners, so planning logic lives in code).
-- `agent/funnel.py` — discovery → embedding-based triage → deep read (PDF
-  fetch + section extraction for arXiv, abstract-only fallback for sources
-  without full text). Non-English subquestions get translated to a short
-  English search query via a bounded LLM call first — arXiv/Semantic
-  Scholar otherwise return zero results for Russian queries. Each source
-  is invoked through a LangChain `StructuredTool`
+- `agent/funnel.py` — discovery → embedding-based triage → deep read: PDF
+  fetch + section extraction for arXiv; for other sources, full page text
+  via an MCP fetch server if enabled (`config.MCP_FETCH_ENABLED`, off by
+  default — see "MCP integrations" below), else the abstract as a
+  fallback. Non-English subquestions get translated to a short English
+  search query via a bounded LLM call first — arXiv/Semantic Scholar
+  otherwise return zero results for Russian queries. Each source is
+  invoked through a LangChain `StructuredTool`
   (`sources/langchain_tools.py`), not `Source.discover()` directly — the
   discovery/parsing logic itself is unchanged, only the call boundary is a
   standard LangChain tool interface.
@@ -242,6 +269,63 @@ answer, the conversation keeps going and reuses the same `ResearchState`
   follow-up's own subquestions get budget and can trigger new discovery;
   `synthesize()` is given the prior Q&A pairs as history so "what about
   X"-style questions resolve correctly.
+
+## MCP integrations
+
+`providers/mcp_client.py` is a sync bridge over `langchain-mcp-adapters`
+(async-only) — the rest of the codebase is synchronous throughout, so this
+is the one place that spins an event loop. `get_mcp_tools(connections)`
+connects to an MCP server just long enough to list its tools, then returns
+them re-wrapped so `.invoke()` works from plain sync code; each actual call
+opens its own short-lived session (the library's model, not a
+persistent connection — fine at this project's scale, a single local
+user).
+
+Three integrations are built on top of it:
+
+- **Deep-read fallback via MCP fetch** (`funnel.py`, `config.MCP_FETCH_ENABLED`,
+  **off by default**) — for non-arXiv candidates, fetches the full page
+  text through [`mcp-server-fetch`](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
+  (spawned on demand via `uvx`) instead of settling for the short abstract.
+  Off by default because it's an extra external dependency (`uvx` +
+  network egress per candidate) beyond this project's own HTTP clients —
+  enable it once `uvx` is available:
+  ```bash
+  uvx --from mcp-server-fetch --with "mcp<2" mcp-server-fetch --help   # sanity check
+  ```
+  then set `config.MCP_FETCH_ENABLED = True`. (Pinned to `mcp<2`: the
+  `mcp-server-fetch` release at the time of writing imports a name that
+  was renamed in `mcp` 2.0, confirmed by a real crash on this machine.)
+- **`index --mcp-dir <path>`** — pulls `.txt`/`.md`/`.html`/`.htm` files
+  from any directory on disk through the
+  [MCP filesystem server](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)
+  (`npx`, no install step), in addition to `corpus/`. Repeatable:
+  ```bash
+  python -m src.cli index --mcp-dir ~/Documents/research-notes --mcp-dir ~/Downloads/papers
+  ```
+  PDFs aren't supported through this path yet — `extract_pdf_sections`
+  needs a real filesystem path, and PDFs under an indexed directory can
+  just be read directly instead of round-tripping through MCP.
+- **GitHub as a source** (`sources/github_mcp.py`, `config.GITHUB_MCP_ENABLED`,
+  **off by default**) — repository search via the official
+  [GitHub MCP server](https://github.com/github/github-mcp-server) (Docker),
+  for subquestions about a specific library/tool that papers/encyclopedic
+  sources don't cover. `stargazers_count` feeds the same citation-boost
+  triage as papers. Needs `GITHUB_PERSONAL_ACCESS_TOKEN` in `.env`
+  (read-only scopes are enough); without it `discover()` no-ops without
+  touching Docker. Off by default for the same reason as MCP fetch — a
+  Docker container spin-up per call is real per-question latency to pay
+  unconditionally. Note: its repo search matches best against short
+  keyword queries, not full natural-language questions (found on a real
+  run — see the module docstring).
+- **`mcp-serve`** — runs this agent itself as an MCP server (`mcp_server.py`,
+  stdio transport), exposing `ask`/`research` as tools for any MCP client
+  (Claude Code, Claude Desktop, etc.):
+  ```bash
+  python -m src.cli mcp-serve
+  ```
+  Both tools reuse the exact same `agent/research_runner.py` functions the
+  CLI and web UI call — no separate reimplementation.
 
 ## Web search: Tavily (recommended) or local SearXNG
 

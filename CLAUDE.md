@@ -67,6 +67,14 @@ gap-check/faithfulness heuristics in `agent/loop.py` stay on their existing
 dict-based interfaces on purpose — no functional need to route them through
 LangChain, and it would break their test doubles for no benefit.
 
+MCP: `providers/mcp_client.py` is a sync bridge over `langchain-mcp-adapters`
+(async-only, `asyncio.run()` per call — see its docstring for why a
+persistent connection isn't worth it at this scale). Built on it: an MCP
+fetch server as a deep-read fallback (`funnel.py`, off by default —
+`config.MCP_FETCH_ENABLED`), an MCP filesystem server for `index --mcp-dir`,
+and `mcp_server.py` exposing this agent's own `ask`/`research` as MCP tools
+over stdio (`mcp-serve`). See README's "MCP integrations" section.
+
 ## Running it
 ```
 python -m src.cli index          # build the index from corpus/

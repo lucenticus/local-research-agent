@@ -128,3 +128,27 @@ FUNNEL_MAX_PDF_BYTES = 30_000_000
 DEFAULT_BUDGET_MAX_ITERATIONS = 5
 DEFAULT_BUDGET_MAX_DEEP_READS = 20
 DEFAULT_BUDGET_MAX_SECONDS = 240.0
+
+# --- MCP integrations (providers/mcp_client.py) ---
+
+# Off by default: spawns an external `uvx`/`npx` MCP-server subprocess per
+# call, an extra dependency (uvx/npx must be installed, network egress on
+# every deep-read) beyond this project's own HTTP clients. Opt in explicitly
+# once the MCP server(s) below are available on the machine — see README.
+MCP_FETCH_ENABLED = False
+# mcp-server-fetch pinned to `mcp<2`: its 2026.7.10 release imports
+# `McpError` from `mcp.shared.exceptions`, renamed to `MCPError` in `mcp`
+# 2.0 - confirmed by a real `uvx mcp-server-fetch --help` crash on this
+# machine (mcp 2.0.0 resolved by uvx by default at time of writing).
+MCP_FETCH_COMMAND = "uvx"
+MCP_FETCH_ARGS = ["--from", "mcp-server-fetch", "--with", "mcp<2", "mcp-server-fetch"]
+# Per-page cap fed into chunking - same rationale as FUNNEL_MAX_PDF_BYTES,
+# just character-based since mcp-server-fetch already returns text, not bytes.
+MCP_FETCH_MAX_CHARS = 8000
+
+# Off by default, same rationale as MCP_FETCH_ENABLED - spawns a Docker
+# container per call (real per-question latency), an extra dependency
+# (Docker + GITHUB_PERSONAL_ACCESS_TOKEN) beyond this project's own HTTP
+# clients. Also gated on the token actually being set - see
+# sources/github_mcp.py.
+GITHUB_MCP_ENABLED = False
