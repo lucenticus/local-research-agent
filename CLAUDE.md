@@ -56,7 +56,9 @@ that always apply.
 ## Stack
 Qwen3.5-4B (Q4, MLX, own copy) · bge-m3 (dense+sparse) ·
 bge-reranker-v2-m3 (on demand) · LanceDB (embedded) · arXiv / Semantic
-Scholar / web.
+Scholar / web · LangGraph (orchestration in `agent/loop.py`) · LangChain-core
+(`providers/langchain_llm.py`, `providers/langchain_embeddings.py` — thin
+wrappers over the resident MLX models, not a separate implementation).
 
 ## Running it
 ```
