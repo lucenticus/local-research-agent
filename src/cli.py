@@ -132,7 +132,7 @@ def cmd_research(args: argparse.Namespace) -> None:
 
     Отдельная таблица от `ask`/`index` (config.RESEARCH_INDEX_TABLE) — иначе
     demo-корпус из corpus/ просачивается в источники реальных ответов
-    (найдено реальным прогоном, см. DEVELOPMENT_PLAN.md).
+    (найдено реальным прогоном).
 
     После первого ответа переходит в интерактивный follow-up-режим (тот же
     диалог, `agent/research_runner.run_followup` — переиспользует уже

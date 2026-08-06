@@ -5,10 +5,9 @@ A local deep-research agent that runs entirely on-device (MacBook M4 Air,
 (Tavily or a local SearXNG instance), reads and cites what it finds, and
 self-checks its own answers before returning them.
 
-The full build history, every real bug found along the way, and the
-hardware assumptions behind each design choice live in
-[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) and [CLAUDE.md](CLAUDE.md). This
-file describes the system as it stands today.
+The standing engineering rules (memory constraints, provider-seam
+convention, test policy) live in [CLAUDE.md](CLAUDE.md). This file
+describes the system as it stands today.
 
 ## Quickstart
 
@@ -52,10 +51,12 @@ flowchart TB
         embed["embed.py<br/>bge-m3 dense, resident"]
         llm["llm.py<br/>Qwen3.5-4B MLX, resident"]
         rerank["rerank.py<br/>Qwen3-Reranker MLX,<br/>load→score→release"]
+        chatmlx["langchain_llm.py<br/>ChatMLX (BaseChatModel)<br/>wraps llm.py"]
+        lcembed["langchain_embeddings.py<br/>MLXBGEEmbeddings<br/>wraps embed.py"]
     end
 
     subgraph store["store/lancedb_store.py"]
-        lance[("LanceDB<br/>dense + FTS(BM25)<br/>hybrid = RRF")]
+        lance[("LanceDB<br/>dense + FTS(BM25)<br/>hybrid = RRF<br/>+ VectorStore/.as_retriever()")]
     end
 
     subgraph ingest["ingest/"]
@@ -64,41 +65,46 @@ flowchart TB
     end
 
     subgraph agent["agent/"]
-        state["state.py<br/>ResearchState"]
+        state["state.py<br/>ResearchState (+ history)"]
         planner["planner.py<br/>question → subquestions"]
         funnel["funnel.py<br/>discovery→triage→deep read"]
-        loop["loop.py<br/>gap-check, budget,<br/>faithfulness-retry"]
-        synth["synthesize.py<br/>answer + [n] citations"]
+        loop["loop.py<br/>LangGraph StateGraph:<br/>plan→run_pass loop→<br/>check_faithfulness→finalize"]
+        synth["synthesize.py<br/>LCEL chain, [n] citations"]
         eval["evaluate.py<br/>coverage + faithfulness"]
+        runner["research_runner.py<br/>run_research / run_followup"]
     end
 
     subgraph sources["sources/ (metadata only)"]
         arxiv["arxiv.py"]
         s2["semantic_scholar.py"]
         websearch["web.py / tavily.py<br/>(SearXNG or Tavily, see below)"]
+        tools["langchain_tools.py<br/>StructuredTool per source"]
     end
 
     browser <--> fastapi
-    fastapi --> rr
-    research --> rr
-    rr --> loop
-    rr --> synth
+    fastapi --> runner
+    research --> runner
+    runner --> loop
+    runner --> synth
 
     index --> ingest --> lance
     index --> embed
-    ask --> embed & rerank & lance & synth
+    ask --> lance & rerank & synth
+    lance --> lcembed
     loop --> planner & funnel & synth & eval
-    funnel --> sources
+    funnel --> tools --> sources
     funnel --> ingest
     funnel --> lance
     loop --> lance
     eval --> rerank
-    synth --> llm
+    synth --> chatmlx --> llm
 ```
 
 Key memory invariant: `embed`/`llm` stay resident; `rerank` loads and
 releases on every call — two heavy models are never resident at once next
-to the reranker.
+to the reranker. `langchain_llm.py`/`langchain_embeddings.py` are thin
+LangChain-interface wrappers over the same resident `llm.py`/`embed.py`
+instances, not separate model copies.
 
 ## Local RAG: `index` / `ask`
 
@@ -111,11 +117,18 @@ questions grounded in that index only (no internet access).
   chunk never straddles two sections.
 - `store/lancedb_store.py` — hybrid search (`search_hybrid`): dense vector +
   LanceDB full-text search (BM25), merged via RRF. `search_dense` is kept
-  as a baseline for comparison.
+  as a baseline for comparison. `LanceDBStore` also implements
+  `langchain_core.vectorstores.VectorStore` (`similarity_search`/
+  `add_texts`/`.as_retriever()`) as an additive layer on top of the same
+  hybrid search — `agent/research_runner.retrieve()` (the shared retrieval
+  step for both `ask` and `research`) goes through `.as_retriever()`.
 - `providers/rerank.py` — `mlx-community/Qwen3-Reranker-0.6B-4bit` (pure
   MLX, 331MB). `ask` takes `RERANK_CANDIDATES_K` hybrid-search hits, the
   reranker loads, scores, releases, and returns the top
   `TOP_K_RETRIEVE`. Toggle off with `config.RERANK_ENABLED = False`.
+- `agent/synthesize.py` — an LCEL chain (`prompt | ChatMLX() |
+  StrOutputParser()`) over the same resident LLM, not a second model
+  instance.
 
 ```bash
 python -m src.cli index
@@ -149,11 +162,17 @@ of only searching a pre-built index:
   fetch + section extraction for arXiv, abstract-only fallback for sources
   without full text). Non-English subquestions get translated to a short
   English search query via a bounded LLM call first — arXiv/Semantic
-  Scholar otherwise return zero results for Russian queries.
-- `agent/loop.py` — the iterative controller. A subquestion is "covered"
-  when retrieval clears a reranker score threshold (`FUNNEL_MIN_RERANK_SCORE
-  = 0.5`) across at least `FUNNEL_MIN_SOURCES_TO_COVER = 3` distinct
-  sources; each retry pass asks sources for more candidates than the last.
+  Scholar otherwise return zero results for Russian queries. Each source
+  is invoked through a LangChain `StructuredTool`
+  (`sources/langchain_tools.py`), not `Source.discover()` directly — the
+  discovery/parsing logic itself is unchanged, only the call boundary is a
+  standard LangChain tool interface.
+- `agent/loop.py` — the iterative controller, implemented as a LangGraph
+  `StateGraph` (`plan` → `run_pass` loop → `check_faithfulness` →
+  `finalize`). A subquestion is "covered" when retrieval clears a reranker
+  score threshold (`FUNNEL_MIN_RERANK_SCORE = 0.5`) across at least
+  `FUNNEL_MIN_SOURCES_TO_COVER = 3` distinct sources; each retry pass asks
+  sources for more candidates than the last.
 
 Search breadth and budget are tunable in `config.py`:
 `FUNNEL_DISCOVERY_LIMIT_PER_SOURCE` (candidates requested per source),
@@ -202,6 +221,27 @@ The answer isn't a black box — after completion, the page/CLI output keeps:
   score: score, citation count, source (`arxiv`/`semantic_scholar`/`web`),
   a clickable link, and a checkmark if it was actually deep-read
   (`agent/research_runner.py::CandidateSummary`).
+
+### Follow-up questions and "tell me more"
+
+`research` isn't a single question-answer round-trip — after the first
+answer, the conversation keeps going and reuses the same `ResearchState`
+(`agent/research_runner.run_followup`) instead of starting over:
+
+- **CLI** — drops into an interactive prompt after the first answer. Type
+  a follow-up question directly, or `подробнее N` / `more N` to force a
+  deep-read of the Nth candidate from the printed list and get a focused
+  answer about it. Empty line or Ctrl-D exits.
+- **Web UI** — a "Уточнить" box appears under each answer for free-text
+  follow-ups, and every row in the candidates table has a "подробнее"
+  button that does the same forced deep-read. Every turn appends its own
+  panel instead of overwriting the previous one, so the whole exchange
+  stays visible.
+- Already-read candidates, embeddings, and LanceDB rows from earlier turns
+  are reused as-is (a real cache hit, not a rebuild) — only the new
+  follow-up's own subquestions get budget and can trigger new discovery;
+  `synthesize()` is given the prior Q&A pairs as history so "what about
+  X"-style questions resolve correctly.
 
 ## Web search: Tavily (recommended) or local SearXNG
 
@@ -273,6 +313,7 @@ python -m scripts.eval_faithfulness   # citation coverage + faithfulness
 Assumptions that couldn't be verified without real hardware are marked
 `# ARCH-Q:` directly in the code (`src/config.py`, `src/providers/embed.py`,
 `src/providers/llm.py`) — LLM HF repo/tag, the FlagEmbedding device kwarg,
-`enable_thinking` support in the chat template, and so on. See
-`DEVELOPMENT_PLAN.md` for which of these have since been confirmed by a
-real run on the target hardware, including peak memory numbers.
+`enable_thinking` support in the chat template, and so on. Each has since
+been exercised on the target hardware (real model loads, real external
+calls) as part of normal development — the `# ARCH-Q:` comments are kept
+as a log of what was originally uncertain, not as open questions.

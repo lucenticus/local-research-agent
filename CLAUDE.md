@@ -2,17 +2,15 @@
 
 A local deep-research agent: arXiv / Semantic Scholar / web → iterative
 search → synthesis with citations and self-verification. Runs entirely
-locally on a MacBook M4 Air, 16GB.
-
-**Source of truth for scope:** `DEVELOPMENT_PLAN.md` — milestones, tasks,
-and acceptance criteria live there. This file holds the standing rules
-that always apply.
+locally on a MacBook M4 Air, 16GB. See `README.md` for the user-facing
+feature tour; this file holds the standing engineering rules.
 
 ## How to work
-- **One milestone per run.** Implement → stop → show the diff and how to
-  run it → wait for review. Don't get ahead into the next milestone.
-- **Definition of done.** A milestone is done only when every checkbox in
-  its plan section is met and verified — not "seems to work".
+- **Implement → stop → show the diff and how to run it → wait for
+  review.** Don't bundle unrelated changes into one pass.
+- **Definition of done.** Verified on real hardware (real models, real
+  external calls where relevant), not "seems to work" from reading the
+  code — see `## Tests` below.
 - **`# ARCH-Q:` instead of guessing.** Any assumption that can't be
   verified without the real hardware (MPS device, MLX load call, LanceDB
   hybrid API, memory peaks) — mark it with this tag, don't silently guess.
