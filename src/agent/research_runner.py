@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import config
-from ..providers import embed, rerank
+from ..providers import rerank
 from ..sources.arxiv import ArxivSource
 from ..sources.base import Source
 from ..sources.semantic_scholar import SemanticScholarSource
 from ..sources.tavily import TavilySource
 from ..sources.web import WebSource
-from ..store.lancedb_store import LanceDBStore
+from ..store.lancedb_store import LanceDBStore, document_to_hit
 from . import funnel, loop
 from .progress import ProgressCallback
 from .state import ResearchState
@@ -78,11 +78,15 @@ def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
     """Retrieval + опциональный реранк поверх уже построенного индекса.
 
     Общий шаг и для `ask` (индекс из corpus/), и для `research` (индекс,
-    пополненный воронкой) — retrieval-механика одна и та же.
+    пополненный воронкой) — retrieval-механика одна и та же. Идёт через
+    LangChain `VectorStoreRetriever` (`store.as_retriever()`) — стандартный
+    интерфейс, совместимый с остальным LangChain-кодом, а не
+    `search_hybrid()` напрямую; сама гибридная dense+FTS-логика при этом не
+    меняется, см. docstring `LanceDBStore`.
     """
-    query_vector = embed.embed_texts([question])[0]
     candidate_k = config.RERANK_CANDIDATES_K if config.RERANK_ENABLED else config.TOP_K_RETRIEVE
-    hits = store.search_hybrid(question, query_vector, k=candidate_k)
+    retriever = store.as_retriever(search_kwargs={"k": candidate_k})
+    hits = [document_to_hit(doc) for doc in retriever.invoke(question)]
     if config.RERANK_ENABLED:
         hits = rerank.rerank(question, hits, top_n=config.TOP_K_RETRIEVE)
     return hits
