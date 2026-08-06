@@ -136,6 +136,9 @@
   }
   #sources { margin: 8px 0 0; padding-left: 20px; font-size: 14px; }
   #sources li { margin-bottom: 4px; }
+  #sources a { color: var(--accent); text-decoration: none; }
+  #sources a:hover { text-decoration: underline; }
+  .citation-badge { color: var(--muted); font-size: 12px; }
   #stats { color: var(--muted); font-size: 13px; margin-top: 12px; }
   .gaps {
     background: var(--warn-bg);
@@ -231,9 +234,24 @@ function renderResult(result) {
   answerEl.textContent = result.answer;
 
   sourcesEl.innerHTML = "";
-  result.sources.forEach((title) => {
+  result.sources.forEach((source) => {
     const li = document.createElement("li");
-    li.textContent = title;
+    if (source.url) {
+      const a = document.createElement("a");
+      a.href = source.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = source.title;
+      li.appendChild(a);
+    } else {
+      li.textContent = source.title;
+    }
+    if (source.citation_count !== null && source.citation_count !== undefined) {
+      const badge = document.createElement("span");
+      badge.className = "citation-badge";
+      badge.textContent = ` · цитирований: ${source.citation_count}`;
+      li.appendChild(badge);
+    }
     sourcesEl.appendChild(li);
   });
 

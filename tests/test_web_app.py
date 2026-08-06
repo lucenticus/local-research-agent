@@ -10,7 +10,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from src.agent.research_runner import ResearchResult
+from src.agent.research_runner import ResearchResult, SourceRef
 from src.web import app as app_module
 
 
@@ -60,7 +60,7 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
             on_progress("Синтезируем ответ…")
         return ResearchResult(
             answer="Кит — млекопитающее [1].",
-            source_titles=["whales.md"],
+            sources=[SourceRef(title="whales.md", url="https://example.com/whales", citation_count=7)],
             gaps=[],
             iterations=1,
             read_count=1,
@@ -79,7 +79,9 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
     assert data["status"] == "done"
     assert "Подвопросов: 1." in data["progress"]
     assert data["result"]["answer"] == "Кит — млекопитающее [1]."
-    assert data["result"]["sources"] == ["whales.md"]
+    assert data["result"]["sources"] == [
+        {"title": "whales.md", "url": "https://example.com/whales", "citation_count": 7}
+    ]
     assert data["result"]["iterations"] == 1
 
 
@@ -93,7 +95,7 @@ def test_concurrent_job_is_rejected_with_409(monkeypatch):
         started.set()
         release.wait(timeout=5.0)
         return ResearchResult(
-            answer="ok", source_titles=[], gaps=[], iterations=1, read_count=0, candidates_count=0
+            answer="ok", sources=[], gaps=[], iterations=1, read_count=0, candidates_count=0
         )
 
     monkeypatch.setattr(app_module, "run_research", fake_run_research)

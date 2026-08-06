@@ -55,20 +55,44 @@ def cmd_index(args: argparse.Namespace) -> None:
     print(f"Индекс построен: {len(all_chunks)} чанков из {corpus_dir}")
 
 
+def _format_source_line(index: int, title: str, url: str = "", citation_count: int | None = None) -> str:
+    line = f"[{index}] {title}"
+    if citation_count is not None:
+        line += f" (цитирований: {citation_count})"
+    if url:
+        # Голый URL на отдельной строке — большинство терминалов сами
+        # превращают его в кликабельную ссылку, без доп. разметки.
+        line += f"\n    {url}"
+    return line
+
+
+def _print_gaps(gaps: list[str] | None) -> None:
+    if gaps:
+        print("\nНепокрытые вопросы (бюджет исследования исчерпан):")
+        for gap in gaps:
+            print(f"  - {gap}")
+
+
 def _print_answer(question: str, hits: list[dict], gaps: list[str] | None = None) -> None:
     answer = synthesize(question, hits, gaps=gaps)
     print(answer)
     print("\nИсточники:")
     seen: set[str] = set()
-    for i, hit in enumerate(hits, start=1):
+    i = 0
+    for hit in hits:
         title = hit.get("source_title") or hit.get("source_id") or "?"
-        if title not in seen:
-            print(f"[{i}] {title}")
-            seen.add(title)
-    if gaps:
-        print("\nНепокрытые вопросы (бюджет исследования исчерпан):")
-        for gap in gaps:
-            print(f"  - {gap}")
+        if title in seen:
+            continue
+        seen.add(title)
+        i += 1
+        citation_count = hit.get("citation_count")
+        print(
+            _format_source_line(
+                i, title, url=hit.get("url") or "",
+                citation_count=citation_count if citation_count is not None and citation_count >= 0 else None,
+            )
+        )
+    _print_gaps(gaps)
 
 
 def cmd_ask(args: argparse.Namespace) -> None:
@@ -86,12 +110,9 @@ def cmd_research(args: argparse.Namespace) -> None:
     print()
     print(result.answer)
     print("\nИсточники:")
-    for i, title in enumerate(result.source_titles, start=1):
-        print(f"[{i}] {title}")
-    if result.gaps:
-        print("\nНепокрытые вопросы (бюджет исследования исчерпан):")
-        for gap in result.gaps:
-            print(f"  - {gap}")
+    for i, source in enumerate(result.sources, start=1):
+        print(_format_source_line(i, source.title, url=source.url, citation_count=source.citation_count))
+    _print_gaps(result.gaps)
     print(
         f"\n[итераций: {result.iterations}, прочитано источников: {result.read_count}, "
         f"найдено кандидатов: {result.candidates_count}]"

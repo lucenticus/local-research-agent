@@ -194,3 +194,89 @@ def test_run_without_on_progress_does_not_raise():
     store = _FakeStore()
 
     funnel.run(sq, [], state, store)  # on_progress не передан - должен просто молчать
+
+
+def test_combined_score_no_citations_equals_cosine():
+    assert funnel._combined_score(0.42, None) == 0.42
+    assert funnel._combined_score(0.42, 0) == 0.42
+
+
+def test_combined_score_boosts_by_log_citations(monkeypatch):
+    monkeypatch.setattr(funnel.config, "CITATION_BOOST_SCALE", 0.03)
+    import math
+
+    boosted = funnel._combined_score(0.5, 1000)
+    assert boosted > 0.5
+    assert boosted == 0.5 + 0.03 * math.log1p(1000)
+
+
+def test_discover_enriches_arxiv_items_missing_citation_count(monkeypatch):
+    monkeypatch.setattr(funnel, "lookup_citation_count", lambda title: 77)
+    arxiv_item = DiscoveredItem(
+        id="arxiv:1", source="arxiv", title="Some Paper", abstract="abstract", citation_count=None
+    )
+    source = _FakeSource("s", [arxiv_item])
+
+    candidates = funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5)
+    assert candidates[0].meta["citation_count"] == 77
+
+
+def test_discover_does_not_enrich_non_arxiv_items(monkeypatch):
+    def _fail(title):
+        raise AssertionError("lookup_citation_count must not be called for non-arxiv sources")
+
+    monkeypatch.setattr(funnel, "lookup_citation_count", _fail)
+    s2_item = DiscoveredItem(
+        id="s2:1", source="semantic_scholar", title="Some Paper", abstract="abstract",
+        citation_count=None,
+    )
+    source = _FakeSource("s", [s2_item])
+
+    candidates = funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5)
+    assert candidates[0].meta["citation_count"] is None
+
+
+def test_discover_does_not_enrich_when_citation_count_already_known(monkeypatch):
+    def _fail(title):
+        raise AssertionError("lookup_citation_count must not be called when already known")
+
+    monkeypatch.setattr(funnel, "lookup_citation_count", _fail)
+    arxiv_item = DiscoveredItem(
+        id="arxiv:1", source="arxiv", title="Some Paper", abstract="abstract", citation_count=5
+    )
+    source = _FakeSource("s", [arxiv_item])
+
+    candidates = funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5)
+    assert candidates[0].meta["citation_count"] == 5
+
+
+def test_triage_citation_boost_can_flip_near_tied_ranking(monkeypatch):
+    monkeypatch.setattr(funnel.config, "FUNNEL_TRIAGE_TOP_N", 2)
+    monkeypatch.setattr(funnel.config, "CITATION_BOOST_SCALE", 0.03)
+    # Почти одинаковая семантическая близость (0.50 против 0.51) - без буста
+    # "b" был бы первым; высокая цитируемость "a" должна перевесить тайбрейк.
+    _mock_embed(monkeypatch, {"query": [1.0, 0.0], "a-text": [0.995, 0.0995], "b-text": [1.0, 0.0]})
+
+    sq = SubQuestion(text="query")
+    a = Candidate(id="a", source="arxiv", title="A", abstract="a-text", meta={"citation_count": 5000})
+    b = Candidate(id="b", source="arxiv", title="B", abstract="b-text", meta={"citation_count": None})
+
+    survivors = funnel._triage(sq, [a, b])
+    assert [c.id for c in survivors] == ["a", "b"]
+
+
+def test_run_passes_url_and_citation_count_to_chunks(monkeypatch):
+    _mock_embed(monkeypatch, {"cats": [1.0, 0.0]})
+    sq = SubQuestion(text="cats")
+    item = DiscoveredItem(
+        id="arxiv:1", source="arxiv", title="Cats paper", abstract="all about cats",
+        url="https://arxiv.org/abs/1", citation_count=42,
+    )
+    source = _FakeSource("s", [item])
+    state = ResearchState(question="cats")
+    store = _FakeStore()
+
+    funnel.run(sq, [source], state, store)
+
+    assert store.added_chunks[0].url == "https://arxiv.org/abs/1"
+    assert store.added_chunks[0].citation_count == 42

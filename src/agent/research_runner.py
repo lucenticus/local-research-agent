@@ -22,9 +22,16 @@ from .synthesize import synthesize
 
 
 @dataclass
+class SourceRef:
+    title: str
+    url: str = ""
+    citation_count: int | None = None  # None — неизвестно (не -1 сентинел LanceDB, см. ниже)
+
+
+@dataclass
 class ResearchResult:
     answer: str
-    source_titles: list[str]
+    sources: list[SourceRef]
     gaps: list[str]
     iterations: int
     read_count: int
@@ -49,15 +56,32 @@ def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
     return hits
 
 
-def _unique_source_titles(hits: list[dict[str, Any]]) -> list[str]:
+def _unique_sources(hits: list[dict[str, Any]]) -> list[SourceRef]:
+    """Дедуп по заголовку + ссылка/цитируемость для рендера (CLI-текст,
+    кликабельная ссылка в веб-интерфейсе). `citation_count == -1` — сентинел
+    LanceDB "неизвестно" (см. store/lancedb_store.py), превращаем в None —
+    вызывающему коду (UI) не нужно знать про внутренний сентинел хранилища.
+    """
     seen: set[str] = set()
-    titles: list[str] = []
+    refs: list[SourceRef] = []
     for hit in hits:
         title = hit.get("source_title") or hit.get("source_id") or "?"
-        if title not in seen:
-            titles.append(title)
-            seen.add(title)
-    return titles
+        if title in seen:
+            continue
+        seen.add(title)
+        citation_count = hit.get("citation_count")
+        refs.append(
+            SourceRef(
+                title=title,
+                url=hit.get("url") or "",
+                citation_count=(
+                    citation_count
+                    if citation_count is not None and citation_count >= 0
+                    else None
+                ),
+            )
+        )
+    return refs
 
 
 def run_research(
@@ -71,7 +95,7 @@ def run_research(
 
     return ResearchResult(
         answer=answer,
-        source_titles=_unique_source_titles(hits),
+        sources=_unique_sources(hits),
         gaps=state.gaps,
         iterations=state.iterations,
         read_count=len(state.read_ids),

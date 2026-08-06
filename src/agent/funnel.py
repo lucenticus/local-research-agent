@@ -14,6 +14,16 @@ fallback, а не притворство, что full-text недоступен.
 короткий английский поисковый запрос перед discovery — это расширение
 "опц. bounded LLM" из плана (там разрешён для gap-check) на реальную
 необходимость, без которой источники не работают для целевого пользователя.
+
+Триаж учитывает цитируемость (§ пользовательский запрос 2026-08-06):
+Semantic Scholar отдаёт `citationCount` прямо при discovery, у arXiv своей
+цитируемости нет — обогащаем через `sources/citations.py` (OpenAlex, best
+effort). Итоговый score триажа = косинус (семантическая релевантность
+подвопросу) + небольшой логарифмический буст по цитируемости — см.
+`_combined_score` и `CITATION_BOOST_SCALE` в config.py: буст — тайбрейкер
+между близкими по смыслу кандидатами, а не замена семантике (иначе
+популярная, но нерелевантная статья обходила бы точный, но малоцитируемый
+ответ).
 """
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ from ..ingest.chunk import chunk_sections, chunk_text
 from ..ingest.extract import Section, extract_pdf_sections
 from ..providers import embed, llm
 from ..sources.base import DiscoveredItem, Source
+from ..sources.citations import lookup_citation_count
 from ..store.lancedb_store import Chunk, LanceDBStore
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
@@ -76,6 +87,11 @@ def _discover(
             # что нашли остальные источники, а не падает целиком.
             continue
         for item in items:
+            citation_count = item.citation_count
+            if citation_count is None and item.source == "arxiv":
+                # arXiv не отдаёт цитируемость сам — обогащаем через OpenAlex
+                # (best effort: не найдено/недоступно -> остаётся None).
+                citation_count = lookup_citation_count(item.title)
             candidates.append(
                 Candidate(
                     id=item.id,
@@ -83,10 +99,23 @@ def _discover(
                     title=item.title,
                     abstract=item.abstract,
                     meta={**item.meta, "url": item.url, "year": item.year,
-                          "citation_count": item.citation_count},
+                          "citation_count": citation_count},
                 )
             )
     return candidates
+
+
+def _combined_score(cosine_similarity: float, citation_count: int | None) -> float:
+    """Семантическая релевантность + небольшой буст по цитируемости.
+
+    log1p, не сырое число — иначе статья с 10000 цитирований задавила бы
+    любую семантику. `CITATION_BOOST_SCALE` откалиброван так, чтобы буст был
+    тайбрейкером (доли от типичного разброса косинуса), а не доминирующим
+    фактором — см. docstring модуля.
+    """
+    if not citation_count or citation_count <= 0:
+        return cosine_similarity
+    return cosine_similarity + config.CITATION_BOOST_SCALE * math.log1p(citation_count)
 
 
 def _triage(sub_question: SubQuestion, candidates: list[Candidate]) -> list[Candidate]:
@@ -97,7 +126,10 @@ def _triage(sub_question: SubQuestion, candidates: list[Candidate]) -> list[Cand
     vectors = embed.embed_texts(texts)
     query_vec, candidate_vecs = vectors[0], vectors[1:]
     for candidate, vec in zip(scoreable, candidate_vecs, strict=True):
-        candidate.triage_score = _cosine(query_vec, vec)
+        cosine_similarity = _cosine(query_vec, vec)
+        candidate.triage_score = _combined_score(
+            cosine_similarity, candidate.meta.get("citation_count")
+        )
     scoreable.sort(key=lambda c: c.triage_score or 0.0, reverse=True)
     return scoreable[: config.FUNNEL_TRIAGE_TOP_N]
 
@@ -166,6 +198,7 @@ def run(
             raw_chunks = chunk_sections(sections) or chunk_text(candidate.abstract)
             if raw_chunks:
                 vectors = embed.embed_texts([c.text for c in raw_chunks])
+                citation_count = candidate.meta.get("citation_count")
                 chunks = [
                     Chunk(
                         id=str(uuid.uuid4()),
@@ -174,6 +207,8 @@ def run(
                         source_title=candidate.title,
                         section=raw.section,
                         vector=vector,
+                        url=candidate.meta.get("url") or "",
+                        citation_count=citation_count if citation_count is not None else -1,
                     )
                     for raw, vector in zip(raw_chunks, vectors, strict=True)
                 ]

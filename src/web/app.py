@@ -61,7 +61,10 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
         if job.result is None
         else {
             "answer": job.result.answer,
-            "sources": job.result.source_titles,
+            "sources": [
+                {"title": s.title, "url": s.url, "citation_count": s.citation_count}
+                for s in job.result.sources
+            ],
             "gaps": job.result.gaps,
             "iterations": job.result.iterations,
             "read_count": job.result.read_count,

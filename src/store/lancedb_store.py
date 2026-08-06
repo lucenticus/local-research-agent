@@ -31,6 +31,12 @@ class Chunk:
     source_title: str
     section: str
     vector: list[float]
+    # "" / -1 — сентинелы "неизвестно" (локальный корпус, источник без URL/
+    # цитируемости), не None: смешение None/int в одной LanceDB-колонке через
+    # разные batch'и (rebuild + add_chunks) даёт null-типизированную колонку
+    # в Arrow, которая потом не принимает реальные int — проверено вручную.
+    url: str = ""
+    citation_count: int = -1
 
 
 class LanceDBStore:
@@ -62,6 +68,8 @@ class LanceDBStore:
                 "source_title": c.source_title,
                 "section": c.section,
                 "vector": c.vector,
+                "url": c.url,
+                "citation_count": c.citation_count,
             }
             for c in chunks
         ]
@@ -86,6 +94,8 @@ class LanceDBStore:
                 "source_title": c.source_title,
                 "section": c.section,
                 "vector": c.vector,
+                "url": c.url,
+                "citation_count": c.citation_count,
             }
             for c in chunks
         ]
