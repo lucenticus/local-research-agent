@@ -11,6 +11,7 @@ import time
 from fastapi.testclient import TestClient
 
 from src.agent.research_runner import CandidateSummary, ResearchResult, SourceRef
+from src.agent.state import ResearchState
 from src.web import app as app_module
 
 
@@ -26,6 +27,7 @@ def _wait_until_done(client: TestClient, job_id: str, timeout: float = 5.0) -> d
 
 def _reset_app_state(monkeypatch):
     monkeypatch.setattr(app_module, "_jobs", {})
+    monkeypatch.setattr(app_module, "_sessions", {})
     monkeypatch.setattr(app_module, "_current_job_id", None)
 
 
@@ -63,10 +65,10 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
             sources=[SourceRef(title="whales.md", url="https://example.com/whales", citation_count=7)],
             candidates=[
                 CandidateSummary(
-                    title="whales.md", source="web", url="https://example.com/whales",
+                    id="c1", title="whales.md", source="web", url="https://example.com/whales",
                     citation_count=7, triage_score=0.87, read=True,
                 ),
-                CandidateSummary(title="unrelated paper", source="arxiv", read=False),
+                CandidateSummary(id="c2", title="unrelated paper", source="arxiv", read=False),
             ],
             gaps=[],
             iterations=1,
@@ -91,11 +93,11 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
     ]
     assert data["result"]["candidates"] == [
         {
-            "title": "whales.md", "source": "web", "url": "https://example.com/whales",
+            "id": "c1", "title": "whales.md", "source": "web", "url": "https://example.com/whales",
             "citation_count": 7, "triage_score": 0.87, "read": True,
         },
         {
-            "title": "unrelated paper", "source": "arxiv", "url": "",
+            "id": "c2", "title": "unrelated paper", "source": "arxiv", "url": "",
             "citation_count": None, "triage_score": None, "read": False,
         },
     ]
@@ -129,6 +131,58 @@ def test_concurrent_job_is_rejected_with_409(monkeypatch):
 
     release.set()
     _wait_until_done(client, first.json()["job_id"])
+
+
+def test_followup_rejects_unknown_session(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    resp = client.post("/api/sessions/does-not-exist/followup", json={"question": "а что насчёт X?"})
+    assert resp.status_code == 404
+
+
+def test_followup_continues_session_after_initial_job(monkeypatch):
+    _reset_app_state(monkeypatch)
+
+    def fake_run_research(question, store, on_progress=None):
+        return ResearchResult(
+            answer="Кит — млекопитающее [1].",
+            sources=[], candidates=[], gaps=[], iterations=1, read_count=1,
+            candidates_count=1, state=ResearchState(question=question),
+        )
+
+    followup_calls = []
+
+    def fake_run_followup(question, state, store, on_progress=None, focus_candidate_id=None):
+        followup_calls.append((question, state, focus_candidate_id))
+        return ResearchResult(
+            answer="А самки крупнее самцов [1].",
+            sources=[], candidates=[], gaps=[], iterations=1, read_count=1,
+            candidates_count=1, state=state,
+        )
+
+    monkeypatch.setattr(app_module, "run_research", fake_run_research)
+    monkeypatch.setattr(app_module, "run_followup", fake_run_followup)
+    monkeypatch.setattr(app_module, "LanceDBStore", lambda table_name=None: object())
+
+    client = TestClient(app_module.app)
+    create_resp = client.post("/api/jobs", json={"question": "Кто такой кит?"})
+    session_id = create_resp.json()["session_id"]
+    _wait_until_done(client, create_resp.json()["job_id"])
+
+    followup_resp = client.post(
+        f"/api/sessions/{session_id}/followup",
+        json={"question": "а самки крупнее?", "focus_candidate_id": "c1"},
+    )
+    assert followup_resp.status_code == 200
+    data = _wait_until_done(client, followup_resp.json()["job_id"])
+
+    assert data["status"] == "done"
+    assert data["result"]["answer"] == "А самки крупнее самцов [1]."
+    assert len(followup_calls) == 1
+    question, state, focus_id = followup_calls[0]
+    assert question == "а самки крупнее?"
+    assert focus_id == "c1"
+    assert state.question == "Кто такой кит?"  # тот же ResearchState, не пересоздан
 
 
 def test_job_reports_error_status_on_exception(monkeypatch):

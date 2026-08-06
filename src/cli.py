@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from . import config
-from .agent.research_runner import retrieve, run_research
+from .agent.research_runner import ResearchResult, retrieve, run_followup, run_research
 from .agent.synthesize import synthesize
 from .ingest.chunk import chunk_sections
 from .ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
@@ -101,16 +101,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
     _print_answer(args.question, hits)
 
 
-def cmd_research(args: argparse.Namespace) -> None:
-    """Deep-research режим (Milestone 3): воронка + итеративный цикл поверх
-    внешних источников (arXiv, Semantic Scholar, web), в отличие от `ask`,
-    который только ищет по уже построенному индексу.
-
-    Отдельная таблица от `ask`/`index` (config.RESEARCH_INDEX_TABLE) — иначе
-    demo-корпус из corpus/ просачивается в источники реальных ответов
-    (найдено реальным прогоном, см. DEVELOPMENT_PLAN.md)."""
-    store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
-    result = run_research(args.question, store, on_progress=print)
+def _print_research_result(result: ResearchResult) -> None:
     print()
     print(result.answer)
     print("\nИсточники:")
@@ -119,17 +110,70 @@ def cmd_research(args: argparse.Namespace) -> None:
     _print_gaps(result.gaps)
 
     if result.candidates:
+        # Номер в списке — то, что пользователь вводит в "подробнее N", чтобы
+        # раскрыть подробнее конкретную найденную тему (см. cmd_research).
         print("\nВсе найденные кандидаты (как агент сузил поиск):")
-        for c in result.candidates:
+        for i, c in enumerate(result.candidates, start=1):
             mark = "✓ прочитан" if c.read else "  найден"
             score = f"score={c.triage_score:.3f}" if c.triage_score is not None else "score=—"
             citation = f", цитирований={c.citation_count}" if c.citation_count is not None else ""
-            print(f"  [{mark}] {score}{citation} ({c.source}) {c.title}")
+            print(f"  [{i}] [{mark}] {score}{citation} ({c.source}) {c.title}")
 
     print(
         f"\n[итераций: {result.iterations}, прочитано источников: {result.read_count}, "
         f"найдено кандидатов: {result.candidates_count}]"
     )
+
+
+def cmd_research(args: argparse.Namespace) -> None:
+    """Deep-research режим (Milestone 3): воронка + итеративный цикл поверх
+    внешних источников (arXiv, Semantic Scholar, web), в отличие от `ask`,
+    который только ищет по уже построенному индексу.
+
+    Отдельная таблица от `ask`/`index` (config.RESEARCH_INDEX_TABLE) — иначе
+    demo-корпус из corpus/ просачивается в источники реальных ответов
+    (найдено реальным прогоном, см. DEVELOPMENT_PLAN.md).
+
+    После первого ответа переходит в интерактивный follow-up-режим (тот же
+    диалог, `agent/research_runner.run_followup` — переиспользует уже
+    накопленный `ResearchState`, а не начинает с нуля): можно задать
+    уточняющий вопрос или написать `подробнее N`, чтобы форсировать
+    deep-read N-го кандидата из списка выше и раскрыть эту тему подробнее.
+    Пустая строка / Ctrl-D — выход."""
+    store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
+    result = run_research(args.question, store, on_progress=print)
+    _print_research_result(result)
+
+    print(
+        "\nМожно задать уточняющий вопрос, написать «подробнее N» — раскрыть "
+        "тему N из списка кандидатов, или просто нажать Enter, чтобы выйти."
+    )
+    while True:
+        try:
+            line = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line:
+            break
+
+        message = line
+        focus_candidate_id = None
+        lowered = line.lower()
+        if lowered.startswith("подробнее ") or lowered.startswith("more "):
+            _, _, arg = line.partition(" ")
+            try:
+                candidate = result.candidates[int(arg.strip()) - 1]
+            except (ValueError, IndexError):
+                print(f"Не понял номер — используйте «подробнее N» с номером из списка (1-{len(result.candidates)}).")
+                continue
+            message = f"Расскажи подробнее об источнике: {candidate.title}"
+            focus_candidate_id = candidate.id
+
+        result = run_followup(
+            message, result.state, store, on_progress=print, focus_candidate_id=focus_candidate_id
+        )
+        _print_research_result(result)
 
 
 def cmd_serve(args: argparse.Namespace) -> None:

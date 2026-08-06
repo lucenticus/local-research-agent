@@ -18,8 +18,9 @@ from ..sources.semantic_scholar import SemanticScholarSource
 from ..sources.tavily import TavilySource
 from ..sources.web import WebSource
 from ..store.lancedb_store import LanceDBStore
-from . import loop
+from . import funnel, loop
 from .progress import ProgressCallback
+from .state import ResearchState
 from .synthesize import synthesize
 
 
@@ -39,6 +40,7 @@ class CandidateSummary:
 
     title: str
     source: str
+    id: str = ""
     url: str = ""
     citation_count: int | None = None
     triage_score: float | None = None
@@ -54,6 +56,11 @@ class ResearchResult:
     iterations: int
     read_count: int
     candidates_count: int
+    # Не JSON-сериализуем и не идёт в веб-ответ (см. web/app.py::_job_to_dict) —
+    # нужен только серверной стороне, чтобы follow-up-вопрос того же диалога
+    # (run_followup) мог продолжить именно этот ResearchState, а не начинать
+    # с нуля.
+    state: ResearchState | None = None
 
 
 def default_sources() -> list[Source]:
@@ -114,6 +121,7 @@ def _candidate_summaries(state) -> list[CandidateSummary]:
     сверху) — это и есть видимый след "как агент сузил поиск"."""
     summaries = [
         CandidateSummary(
+            id=c.id,
             title=c.title,
             source=c.source,
             url=c.meta.get("url") or "",
@@ -135,6 +143,7 @@ def run_research(
     state = loop.run(question, default_sources(), store, on_progress=on_progress)
     hits = retrieve(store, question)
     answer = synthesize(question, hits, gaps=state.gaps)
+    state.add_turn(question, answer)
 
     return ResearchResult(
         answer=answer,
@@ -144,4 +153,42 @@ def run_research(
         iterations=state.iterations,
         read_count=len(state.read_ids),
         candidates_count=len(state.candidates),
+        state=state,
+    )
+
+
+def run_followup(
+    question: str,
+    state: ResearchState,
+    store: LanceDBStore,
+    on_progress: ProgressCallback | None = None,
+    focus_candidate_id: str | None = None,
+) -> ResearchResult:
+    """Уточняющий вопрос / "раскрой подробнее эту тему" в том же диалоге —
+    продолжает уже накопленный `state` (см. docstring `agent/state.py`)
+    вместо `run_research()`'а с нуля.
+
+    `focus_candidate_id` — id кандидата из `result.candidates` предыдущего
+    хода ("раскрыть подробнее"): форсирует его deep-read (если ещё не
+    прочитан) до того, как обычный follow-up-проход воронки пойдёт искать
+    что-то ещё по этой теме."""
+    if focus_candidate_id is not None:
+        candidate = next((c for c in state.candidates if c.id == focus_candidate_id), None)
+        if candidate is not None and not state.is_read(candidate.id):
+            funnel.deep_read_candidate(candidate, question, state, store, on_progress=on_progress)
+
+    loop.run(question, default_sources(), store, on_progress=on_progress, state=state)
+    hits = retrieve(store, question)
+    answer = synthesize(question, hits, gaps=state.gaps, history=state.history)
+    state.add_turn(question, answer)
+
+    return ResearchResult(
+        answer=answer,
+        sources=_unique_sources(hits),
+        candidates=_candidate_summaries(state),
+        gaps=state.gaps,
+        iterations=state.iterations,
+        read_count=len(state.read_ids),
+        candidates_count=len(state.candidates),
+        state=state,
     )

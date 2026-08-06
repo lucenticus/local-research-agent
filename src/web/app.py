@@ -1,4 +1,4 @@
-"""FastAPI веб-интерфейс поверх agent/research_runner.run_research().
+"""FastAPI веб-интерфейс поверх agent/research_runner.run_research()/run_followup().
 
 Один research()-прогон может занимать минуты (реальные модели, внешние
 источники) — выполняется в фоновом потоке, прогресс отдаётся клиенту через
@@ -8,6 +8,13 @@ polling (`GET /api/jobs/{id}`), без WebSocket/SSE — на масштабе �
 Одновременно выполняется не больше одного research()-прогона (§1: нельзя
 держать/грузить несколько тяжёлых моделей параллельно на 16ГБ) — новый запрос,
 пока предыдущий не завершён, отклоняется 409, а не встаёт в очередь молча.
+
+Follow-up-вопросы ("уточни", "раскрой подробнее тему N") продолжают тот же
+диалог — `Session` хранит `ResearchState`/`LanceDBStore` между ходами (job'ами)
+одного разговора, см. `agent/research_runner.run_followup`. Первый вопрос
+диалога создаёт сессию (`POST /api/jobs`), follow-up идёт в ту же сессию
+(`POST /api/sessions/{session_id}/followup`) — оба возвращают job_id и
+опрашиваются одинаково через `GET /api/jobs/{id}`.
 """
 
 from __future__ import annotations
@@ -24,7 +31,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config
-from ..agent.research_runner import ResearchResult, run_research
+from ..agent.research_runner import ResearchResult, run_followup, run_research
+from ..agent.state import ResearchState
 from ..store.lancedb_store import LanceDBStore
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -36,6 +44,7 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 @dataclass
 class Job:
     id: str
+    session_id: str
     question: str
     status: Literal["running", "done", "error"] = "running"
     progress: list[str] = field(default_factory=list)
@@ -43,7 +52,15 @@ class Job:
     error: str | None = None
 
 
+@dataclass
+class Session:
+    id: str
+    store: LanceDBStore
+    state: ResearchState | None = None  # заполняется после первого завершённого хода
+
+
 _jobs: dict[str, Job] = {}
+_sessions: dict[str, Session] = {}
 _jobs_lock = threading.Lock()
 _current_job_id: str | None = None
 
@@ -52,9 +69,15 @@ class ResearchRequest(BaseModel):
     question: str
 
 
+class FollowupRequest(BaseModel):
+    question: str
+    focus_candidate_id: str | None = None
+
+
 def _job_to_dict(job: Job) -> dict[str, Any]:
     return {
         "job_id": job.id,
+        "session_id": job.session_id,
         "question": job.question,
         "status": job.status,
         "progress": list(job.progress),
@@ -68,6 +91,7 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
             ],
             "candidates": [
                 {
+                    "id": c.id,
                     "title": c.title,
                     "source": c.source,
                     "url": c.url,
@@ -86,19 +110,21 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
     }
 
 
-def _run_job(job: Job) -> None:
+def _run_job(job: Job, session: Session, run: Any) -> None:
+    """`run` — `lambda on_progress: run_research(...)` либо
+    `lambda on_progress: run_followup(...)`, оба возвращают `ResearchResult`
+    с заполненным `.state`, который остаётся в `session` для следующего хода."""
     global _current_job_id
     try:
         def on_progress(message: str) -> None:
             with _jobs_lock:
                 job.progress.append(message)
 
-        # Отдельная таблица от `ask`/`index` — см. config.RESEARCH_INDEX_TABLE.
-        store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
-        result = run_research(job.question, store, on_progress=on_progress)
+        result = run(on_progress)
         with _jobs_lock:
             job.result = result
             job.status = "done"
+            session.state = result.state
     except Exception as exc:  # research() дошёл до пользователя как ошибка, не 500 без объяснения
         with _jobs_lock:
             job.error = str(exc)
@@ -125,12 +151,46 @@ def create_job(payload: ResearchRequest) -> dict[str, Any]:
             raise HTTPException(
                 409, "Уже выполняется другой research-запрос — дождитесь его завершения"
             )
-        job = Job(id=str(uuid.uuid4()), question=question)
+        session_id = str(uuid.uuid4())
+        # Отдельная таблица от `ask`/`index` — см. config.RESEARCH_INDEX_TABLE.
+        session = Session(id=session_id, store=LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE))
+        _sessions[session_id] = session
+        job = Job(id=str(uuid.uuid4()), session_id=session_id, question=question)
         _jobs[job.id] = job
         _current_job_id = job.id
 
-    threading.Thread(target=_run_job, args=(job,), daemon=True).start()
-    return {"job_id": job.id}
+    run = lambda on_progress: run_research(job.question, session.store, on_progress=on_progress)
+    threading.Thread(target=_run_job, args=(job, session, run), daemon=True).start()
+    return {"job_id": job.id, "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/followup")
+def create_followup(session_id: str, payload: FollowupRequest) -> dict[str, Any]:
+    global _current_job_id
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(400, "Пустой вопрос")
+
+    with _jobs_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            raise HTTPException(404, "Неизвестная сессия — сначала задайте исходный вопрос")
+        if session.state is None:
+            raise HTTPException(409, "Исходный запрос этой сессии ещё не завершён")
+        if _current_job_id is not None:
+            raise HTTPException(
+                409, "Уже выполняется другой research-запрос — дождитесь его завершения"
+            )
+        job = Job(id=str(uuid.uuid4()), session_id=session_id, question=question)
+        _jobs[job.id] = job
+        _current_job_id = job.id
+
+    run = lambda on_progress: run_followup(
+        job.question, session.state, session.store,
+        on_progress=on_progress, focus_candidate_id=payload.focus_candidate_id,
+    )
+    threading.Thread(target=_run_job, args=(job, session, run), daemon=True).start()
+    return {"job_id": job.id, "session_id": session_id}
 
 
 @app.get("/api/jobs/{job_id}")
