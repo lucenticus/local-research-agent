@@ -35,9 +35,26 @@ def _format_context(chunks: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def synthesize(question: str, chunks: list[dict[str, Any]], gaps: list[str] | None = None) -> str:
+def _format_history(history: list[tuple[str, str]]) -> str:
+    turns = [f"Вопрос: {q}\nОтвет: {a}" for q, a in history]
+    return "\n\n".join(turns)
+
+
+def synthesize(
+    question: str,
+    chunks: list[dict[str, Any]],
+    gaps: list[str] | None = None,
+    history: list[tuple[str, str]] | None = None,
+) -> str:
     context = _format_context(chunks)
-    user_message = f"Контекст:\n{context}\n\nВопрос: {question}"
+    user_message = ""
+    if history:
+        # Follow-up-вопрос в том же диалоге (agent/research_runner.run_followup)
+        # — модель должна видеть, что уже спрашивали и отвечали, чтобы
+        # "а что насчёт X" разрешалось в контекст предыдущего ответа, а не
+        # повисало без антецедента.
+        user_message += f"Предыдущий диалог:\n{_format_history(history)}\n\n"
+    user_message += f"Контекст:\n{context}\n\nВопрос: {question}"
     if gaps:
         gaps_text = "\n".join(f"- {g}" for g in gaps)
         user_message += (

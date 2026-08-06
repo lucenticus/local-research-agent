@@ -186,6 +186,54 @@ def _deep_read_sections(candidate: Candidate) -> list[Section]:
     return [Section(name=candidate.title, category="abstract", text=candidate.abstract)]
 
 
+def deep_read_candidate(
+    candidate: Candidate,
+    sub_question_text: str,
+    state: ResearchState,
+    store: LanceDBStore,
+    on_progress: ProgressCallback | None = None,
+) -> None:
+    """Deep-read одного кандидата (внутренний шаг `run()`, вынесен отдельной
+    функцией, чтобы follow-up "раскрой подробнее эту тему"
+    (`research_runner.run_followup`) мог форсировать чтение конкретного уже
+    найденного кандидата напрямую, без повторного discovery/триажа."""
+    if state.is_read(candidate.id):
+        return
+
+    already_indexed = store.has_source(candidate.id)
+    if not already_indexed:
+        _emit(on_progress, f"Читаем: {candidate.title[:80]}…")
+        sections = _deep_read_sections(candidate)
+        raw_chunks = chunk_sections(sections) or chunk_text(candidate.abstract)
+        if raw_chunks:
+            vectors = embed.embed_texts([c.text for c in raw_chunks])
+            citation_count = candidate.meta.get("citation_count")
+            chunks = [
+                Chunk(
+                    id=str(uuid.uuid4()),
+                    text=raw.text,
+                    source_id=candidate.id,
+                    source_title=candidate.title,
+                    section=raw.section,
+                    vector=vector,
+                    url=candidate.meta.get("url") or "",
+                    citation_count=citation_count if citation_count is not None else -1,
+                )
+                for raw, vector in zip(raw_chunks, vectors, strict=True)
+            ]
+            store.add_chunks(chunks)
+            state.add_findings(
+                [
+                    Finding(text=c.text, source_id=candidate.id, sub_question=sub_question_text)
+                    for c in raw_chunks
+                ]
+            )
+    else:
+        _emit(on_progress, f"Уже в индексе (кэш): {candidate.title[:80]}")
+
+    state.mark_read(candidate.id)
+
+
 def run(
     sub_question: SubQuestion,
     sources: list[Source],
@@ -212,38 +260,4 @@ def run(
     for candidate in survivors:
         if state.budget_exhausted():
             break
-        if state.is_read(candidate.id):
-            continue
-
-        already_indexed = store.has_source(candidate.id)
-        if not already_indexed:
-            _emit(on_progress, f"Читаем: {candidate.title[:80]}…")
-            sections = _deep_read_sections(candidate)
-            raw_chunks = chunk_sections(sections) or chunk_text(candidate.abstract)
-            if raw_chunks:
-                vectors = embed.embed_texts([c.text for c in raw_chunks])
-                citation_count = candidate.meta.get("citation_count")
-                chunks = [
-                    Chunk(
-                        id=str(uuid.uuid4()),
-                        text=raw.text,
-                        source_id=candidate.id,
-                        source_title=candidate.title,
-                        section=raw.section,
-                        vector=vector,
-                        url=candidate.meta.get("url") or "",
-                        citation_count=citation_count if citation_count is not None else -1,
-                    )
-                    for raw, vector in zip(raw_chunks, vectors, strict=True)
-                ]
-                store.add_chunks(chunks)
-                state.add_findings(
-                    [
-                        Finding(text=c.text, source_id=candidate.id, sub_question=sub_question.text)
-                        for c in raw_chunks
-                    ]
-                )
-        else:
-            _emit(on_progress, f"Уже в индексе (кэш): {candidate.title[:80]}")
-
-        state.mark_read(candidate.id)
+        deep_read_candidate(candidate, sub_question.text, state, store, on_progress=on_progress)

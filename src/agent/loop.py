@@ -32,6 +32,16 @@ Milestone 4: когда все подвопросы покрыты, чернов
 чтобы воронка собрала больше подтверждающих источников перед финалом. Больше
 одного такого переоткрытия не делаем — иначе при системно слабом покрытии
 можно застрять в переоткрытии до полного исчерпания budget без пользы.
+
+Follow-up-вопросы: `run()` принимает опциональный уже существующий `state`
+(см. docstring `state.py`) — тогда НЕ пересоздаёт его, а добавляет только
+новые подвопросы follow-up-текста и выдаёт им свежий `budget`/таймер, оставляя
+`candidates`/`findings`/`read_ids` прежних ходов как есть (кэш-хит). Чтобы
+faithfulness-retry и подсчёт "все подвопросы покрыты" на этом проходе не
+трогали ДАВНО решённые или ещё не решённые подвопросы прошлых ходов —
+`_GraphState.active_texts` держит тексты только подвопросов ТЕКУЩЕГО вызова,
+и весь граф (кроме `finalize`, который честно репортит gaps по ВСЕМ ходам
+диалога сразу) фильтрует по этому множеству.
 """
 
 from __future__ import annotations
@@ -96,18 +106,21 @@ class _GraphState(TypedDict):
     on_progress: ProgressCallback | None
     force_discovery: bool
     low_faithfulness_retry_used: bool
+    active_texts: set[str]
+
+
+def _active_open(gs: _GraphState) -> list:
+    return [sq for sq in gs["research_state"].open_sub_questions() if sq.text in gs["active_texts"]]
 
 
 def _node_plan(gs: _GraphState) -> dict:
-    rs = gs["research_state"]
-    rs.sub_questions = planner.plan(gs["question"])
-    _emit(gs["on_progress"], f"Подвопросов: {len(rs.sub_questions)}.")
+    _emit(gs["on_progress"], f"Подвопросов: {len(gs['active_texts'])}.")
     return {}
 
 
 def _node_run_pass(gs: _GraphState) -> dict:
     rs = gs["research_state"]
-    open_sqs = rs.open_sub_questions()
+    open_sqs = _active_open(gs)
     # Инкремент — ПОСЛЕ прохода (см. ниже), не до: если считать проход
     # начатым раньше, budget_exhausted() внутри for-loop триггерится тем же
     # инкрементом и последний разрешённый проход всегда пропадает вхолостую
@@ -144,7 +157,8 @@ def _node_check_faithfulness(gs: _GraphState) -> dict:
         return {}
     _emit(gs["on_progress"], "Обоснованность низкая — собираем больше источников.")
     for sq in rs.sub_questions:
-        sq.status = SubQuestionStatus.OPEN
+        if sq.text in gs["active_texts"]:
+            sq.status = SubQuestionStatus.OPEN
     return {"force_discovery": True, "low_faithfulness_retry_used": True}
 
 
@@ -159,19 +173,17 @@ def _node_finalize(gs: _GraphState) -> dict:
 
 
 def _route_pass(gs: _GraphState) -> str:
-    rs = gs["research_state"]
-    if rs.budget_exhausted():
+    if gs["research_state"].budget_exhausted():
         return "finalize"
-    if rs.open_sub_questions():
+    if _active_open(gs):
         return "run_pass"
     return "check_faithfulness"
 
 
 def _route_after_faithfulness(gs: _GraphState) -> str:
-    rs = gs["research_state"]
-    if not rs.open_sub_questions():
+    if not _active_open(gs):
         return "finalize"  # честный черновик, либо retry уже использован
-    if rs.budget_exhausted():
+    if gs["research_state"].budget_exhausted():
         return "finalize"
     return "run_pass"  # переоткрыто retry'ем — ещё один форсированный проход
 
@@ -211,8 +223,22 @@ def run(
     store: LanceDBStore,
     budget: Budget | None = None,
     on_progress: ProgressCallback | None = None,
+    state: ResearchState | None = None,
 ) -> ResearchState:
-    state = ResearchState(question=question, budget=budget or Budget())
+    """`state=None` (обычный вызов) — свежий `ResearchState` с нуля.
+
+    `state=<существующий>` — follow-up-ход того же диалога: подвопросы
+    follow-up-текста добавляются к уже накопленным (не заменяют их), ход
+    получает свой budget/таймер, `candidates`/`findings`/`read_ids` из
+    прошлых ходов остаются доступны воронке как кэш."""
+    new_sub_questions = planner.plan(question)
+    if state is None:
+        state = ResearchState(question=question, budget=budget or Budget())
+        state.sub_questions = new_sub_questions
+    else:
+        state.sub_questions.extend(new_sub_questions)
+        state.start_new_turn(budget)
+
     initial: _GraphState = {
         "research_state": state,
         "question": question,
@@ -221,6 +247,7 @@ def run(
         "on_progress": on_progress,
         "force_discovery": False,
         "low_faithfulness_retry_used": False,
+        "active_texts": {sq.text for sq in new_sub_questions},
     }
     # `recursion_limit` считает узлы графа, а не проходы воронки — потолок
     # даём с большим запасом относительно любого разумного budget.max_iterations,

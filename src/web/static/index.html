@@ -129,15 +129,15 @@
     vertical-align: -1px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #answer {
+  .answer {
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 15px;
   }
-  #sources { margin: 8px 0 0; padding-left: 20px; font-size: 14px; }
-  #sources li { margin-bottom: 4px; }
-  #sources a { color: var(--accent); text-decoration: none; }
-  #sources a:hover { text-decoration: underline; }
+  .sources { margin: 8px 0 0; padding-left: 20px; font-size: 14px; }
+  .sources li { margin-bottom: 4px; }
+  .sources a { color: var(--accent); text-decoration: none; }
+  .sources a:hover { text-decoration: underline; }
   .citation-badge { color: var(--muted); font-size: 12px; }
   #candidates-panel summary {
     cursor: pointer;
@@ -167,7 +167,29 @@
   #candidates-table a { color: var(--accent); text-decoration: none; }
   #candidates-table a:hover { text-decoration: underline; }
   .read-mark { color: #22c55e; }
-  #stats { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  .stats { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  .expand-btn {
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+    cursor: pointer;
+  }
+  .expand-btn:hover { color: var(--text); border-color: var(--accent); }
+  .expand-btn:disabled { opacity: 0.5; cursor: default; }
+  #turns .panel:not(:last-child) { opacity: 0.85; }
+  .turn-question {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  #followup-form { display: flex; gap: 8px; margin-bottom: 24px; }
+  #followup-form.hidden { display: none; }
   .gaps {
     background: var(--warn-bg);
     border: 1px solid var(--warn-border);
@@ -206,20 +228,18 @@
     <div class="error" id="error-text"></div>
   </div>
 
-  <div id="result-panel" class="panel hidden">
-    <h2>Ответ</h2>
-    <div id="answer"></div>
-    <div id="gaps-wrap"></div>
-    <h2 style="margin-top:16px">Источники</h2>
-    <ol id="sources"></ol>
-    <div id="stats"></div>
-  </div>
+  <div id="turns"></div>
+
+  <form id="followup-form" class="hidden">
+    <textarea id="followup-question" placeholder="Уточняющий вопрос по этому же диалогу…"></textarea>
+    <button id="followup-submit" type="submit">Уточнить</button>
+  </form>
 
   <details id="candidates-panel" class="panel hidden">
     <summary id="candidates-summary">Все найденные кандидаты</summary>
     <table id="candidates-table">
       <thead>
-        <tr><th></th><th>score</th><th>цитирований</th><th>источник</th><th>заголовок</th></tr>
+        <tr><th></th><th>score</th><th>цитирований</th><th>источник</th><th>заголовок</th><th></th></tr>
       </thead>
       <tbody id="candidates-body"></tbody>
     </table>
@@ -230,29 +250,34 @@
 const form = document.getElementById("form");
 const questionEl = document.getElementById("question");
 const submitBtn = document.getElementById("submit");
+const followupForm = document.getElementById("followup-form");
+const followupQuestionEl = document.getElementById("followup-question");
+const followupSubmitBtn = document.getElementById("followup-submit");
 const progressPanel = document.getElementById("progress-panel");
 const progressList = document.getElementById("progress-list");
 const errorPanel = document.getElementById("error-panel");
 const errorText = document.getElementById("error-text");
-const resultPanel = document.getElementById("result-panel");
-const answerEl = document.getElementById("answer");
-const sourcesEl = document.getElementById("sources");
-const statsEl = document.getElementById("stats");
-const gapsWrap = document.getElementById("gaps-wrap");
+const turnsEl = document.getElementById("turns");
 const candidatesPanel = document.getElementById("candidates-panel");
 const candidatesSummary = document.getElementById("candidates-summary");
 const candidatesBody = document.getElementById("candidates-body");
 
 let pollTimer = null;
+let sessionId = null;
+let busy = false;
 
-function resetUI() {
+function setBusy(value) {
+  busy = value;
+  submitBtn.disabled = value;
+  followupSubmitBtn.disabled = value;
+}
+
+function beginTurn() {
+  if (pollTimer) clearTimeout(pollTimer);
   progressPanel.classList.remove("hidden");
   errorPanel.classList.add("hidden");
-  resultPanel.classList.add("hidden");
-  candidatesPanel.classList.add("hidden");
   progressList.innerHTML = "";
-  gapsWrap.innerHTML = "";
-  candidatesBody.innerHTML = "";
+  setBusy(true);
 }
 
 function renderProgress(messages, running) {
@@ -271,14 +296,44 @@ function renderProgress(messages, running) {
   progressList.scrollTop = progressList.scrollHeight;
 }
 
-function renderResult(result) {
-  // Панель прогресса НЕ скрываем - это единственный видимый след того, как
-  // агент искал и сужал круг источников, полезно посмотреть и после того,
-  // как ответ уже готов (см. обсуждение с пользователем 2026-08-06).
-  resultPanel.classList.remove("hidden");
-  answerEl.textContent = result.answer;
+// Каждый ход диалога (исходный вопрос + каждый follow-up) - своя панель,
+// добавляется в #turns, а не затирает предыдущую - иначе видно только
+// последний ответ и теряется нить уточнений.
+function renderTurn(question, result) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
 
-  sourcesEl.innerHTML = "";
+  const q = document.createElement("div");
+  q.className = "turn-question";
+  q.textContent = question;
+  panel.appendChild(q);
+
+  const answer = document.createElement("div");
+  answer.className = "answer";
+  answer.textContent = result.answer;
+  panel.appendChild(answer);
+
+  if (result.gaps && result.gaps.length > 0) {
+    const div = document.createElement("div");
+    div.className = "gaps";
+    const strong = document.createElement("strong");
+    strong.textContent = "Непокрытые вопросы (бюджет исследования исчерпан):";
+    div.appendChild(strong);
+    result.gaps.forEach((gap) => {
+      const p = document.createElement("div");
+      p.textContent = "— " + gap;
+      div.appendChild(p);
+    });
+    panel.appendChild(div);
+  }
+
+  const sourcesHeading = document.createElement("h2");
+  sourcesHeading.style.marginTop = "16px";
+  sourcesHeading.textContent = "Источники";
+  panel.appendChild(sourcesHeading);
+
+  const sourcesEl = document.createElement("ol");
+  sourcesEl.className = "sources";
   result.sources.forEach((source) => {
     const li = document.createElement("li");
     if (source.url) {
@@ -299,29 +354,25 @@ function renderResult(result) {
     }
     sourcesEl.appendChild(li);
   });
+  panel.appendChild(sourcesEl);
 
-  gapsWrap.innerHTML = "";
-  if (result.gaps && result.gaps.length > 0) {
-    const div = document.createElement("div");
-    div.className = "gaps";
-    const strong = document.createElement("strong");
-    strong.textContent = "Непокрытые вопросы (бюджет исследования исчерпан):";
-    div.appendChild(strong);
-    result.gaps.forEach((gap) => {
-      const p = document.createElement("div");
-      p.textContent = "— " + gap;
-      div.appendChild(p);
-    });
-    gapsWrap.appendChild(div);
-  }
-
-  statsEl.textContent =
+  const stats = document.createElement("div");
+  stats.className = "stats";
+  stats.textContent =
     `Итераций: ${result.iterations} · прочитано источников: ${result.read_count} · ` +
     `найдено кандидатов: ${result.candidates_count}`;
+  panel.appendChild(stats);
+
+  turnsEl.appendChild(panel);
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
 
   renderCandidates(result.candidates || []);
+  followupForm.classList.remove("hidden");
 }
 
+// Кандидаты кумулятивны на весь диалог (ResearchState копится между
+// follow-up-ходами) - таблица всегда отражает состояние целиком, а не
+// только последний ход.
 function renderCandidates(candidates) {
   candidatesBody.innerHTML = "";
   if (candidates.length === 0) {
@@ -364,6 +415,17 @@ function renderCandidates(candidates) {
     }
     tr.appendChild(titleTd);
 
+    const expandTd = document.createElement("td");
+    if (c.id) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "expand-btn";
+      btn.textContent = "подробнее";
+      btn.addEventListener("click", () => expandCandidate(c));
+      expandTd.appendChild(btn);
+    }
+    tr.appendChild(expandTd);
+
     candidatesBody.appendChild(tr);
   });
   candidatesPanel.classList.remove("hidden");
@@ -375,70 +437,95 @@ function renderError(message) {
   errorText.textContent = "Ошибка: " + message;
 }
 
-async function poll(jobId) {
+async function poll(jobId, question) {
   let resp;
   try {
     resp = await fetch(`/api/jobs/${jobId}`);
   } catch (e) {
-    pollTimer = setTimeout(() => poll(jobId), 1500);
+    pollTimer = setTimeout(() => poll(jobId, question), 1500);
     return;
   }
   if (!resp.ok) {
     renderError("не удалось получить статус запроса (" + resp.status + ")");
-    submitBtn.disabled = false;
+    setBusy(false);
     return;
   }
   const data = await resp.json();
   renderProgress(data.progress, data.status === "running");
 
   if (data.status === "running") {
-    pollTimer = setTimeout(() => poll(jobId), 1000);
+    pollTimer = setTimeout(() => poll(jobId, question), 1000);
   } else if (data.status === "done") {
-    renderResult(data.result);
-    submitBtn.disabled = false;
+    sessionId = data.session_id;
+    renderTurn(question, data.result);
+    setBusy(false);
   } else {
     renderError(data.error || "неизвестная ошибка");
-    submitBtn.disabled = false;
+    setBusy(false);
   }
 }
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const question = questionEl.value.trim();
-  if (!question) return;
-
-  if (pollTimer) clearTimeout(pollTimer);
-  resetUI();
-  submitBtn.disabled = true;
-
+async function submitJob(url, body, question) {
+  beginTurn();
   let resp;
   try {
-    resp = await fetch("/api/jobs", {
+    resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify(body),
     });
   } catch (err) {
     renderError("не удалось связаться с сервером");
-    submitBtn.disabled = false;
+    setBusy(false);
     return;
   }
 
-  if (resp.status === 409) {
+  if (resp.status === 409 || resp.status === 404) {
     const data = await resp.json();
-    renderError(data.detail || "уже выполняется другой запрос");
-    submitBtn.disabled = false;
+    renderError(data.detail || "запрос отклонён сервером");
+    setBusy(false);
     return;
   }
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
     renderError(data.detail || ("ошибка запроса (" + resp.status + ")"));
-    submitBtn.disabled = false;
+    setBusy(false);
     return;
   }
 
   const data = await resp.json();
-  poll(data.job_id);
+  poll(data.job_id, question);
+}
+
+function expandCandidate(candidate) {
+  if (busy) return;
+  const question = `Расскажи подробнее об источнике: ${candidate.title}`;
+  submitJob(`/api/sessions/${sessionId}/followup`, { question, focus_candidate_id: candidate.id }, question);
+}
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (busy) return;
+  const question = questionEl.value.trim();
+  if (!question) return;
+
+  // Новый исходный вопрос - новый диалог: сбрасываем накопленные ходы и
+  // таблицу кандидатов прежней сессии.
+  sessionId = null;
+  turnsEl.innerHTML = "";
+  candidatesPanel.classList.add("hidden");
+  followupForm.classList.add("hidden");
+
+  submitJob("/api/jobs", { question }, question);
+});
+
+followupForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (busy || !sessionId) return;
+  const question = followupQuestionEl.value.trim();
+  if (!question) return;
+  followupQuestionEl.value = "";
+  submitJob(`/api/sessions/${sessionId}/followup`, { question }, question);
 });
 </script>
 </body>

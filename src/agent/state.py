@@ -9,6 +9,14 @@
   удаления;
 - цикл обязан завершаться по `budget`, даже если остались пробелы —
   `budget_exhausted()` даёт на это однозначный ответ.
+
+Follow-up-вопросы (уточнения в рамках того же диалога) переиспользуют один и
+тот же `ResearchState` вместо создания нового — `candidates`/`findings`/
+`read_ids` из предыдущих ходов остаются доступны (реальный кэш-хит: то, что
+уже нашли и прочитали, не ищется и не читается заново), а `history` даёт
+синтезу увидеть предыдущие вопросы и ответы диалога. `agent/loop.py::run()`
+при передаче существующего `state` не пересоздаёт его, а только добавляет
+новые подвопросы и выдаёт им свежий `budget` — см. docstring `loop.run`.
 """
 
 from __future__ import annotations
@@ -68,6 +76,7 @@ class ResearchState:
     read_ids: set[str] = field(default_factory=set)
     findings: list[Finding] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    history: list[tuple[str, str]] = field(default_factory=list)
     iterations: int = 0
     _candidate_ids: set[str] = field(default_factory=set, repr=False)
     _started_at: float = field(default_factory=time.monotonic, repr=False)
@@ -91,6 +100,17 @@ class ResearchState:
 
     def add_findings(self, new_findings: list[Finding]) -> None:
         self.findings.extend(new_findings)
+
+    def add_turn(self, question: str, answer: str) -> None:
+        self.history.append((question, answer))
+
+    def start_new_turn(self, budget: Budget | None = None) -> None:
+        """Follow-up-ход того же диалога получает свой budget/таймер
+        (`iterations`/`_started_at` сбрасываются) — `candidates`/`findings`/
+        `read_ids` из прошлых ходов не трогаются, см. docstring класса."""
+        self.budget = budget or Budget()
+        self.iterations = 0
+        self._started_at = time.monotonic()
 
     def add_gap(self, text: str) -> None:
         if text not in self.gaps:
