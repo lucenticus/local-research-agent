@@ -54,7 +54,8 @@ feature tour; this file holds the standing engineering rules.
 ## Stack
 Qwen3.5-4B (Q4, MLX, own copy) · bge-m3 (dense+sparse) ·
 bge-reranker-v2-m3 (on demand) · LanceDB (embedded) · arXiv / Semantic
-Scholar / web · LangGraph (orchestration in `agent/loop.py`) · LangChain:
+Scholar / CrossRef / Wikipedia / web (+ GitHub via MCP, off by default) ·
+LangGraph (orchestration in `agent/loop.py`) · LangChain:
 `providers/langchain_llm.py`/`langchain_embeddings.py` wrap the resident MLX
 models (not a separate implementation) as `BaseChatModel`/`Embeddings`;
 `sources/langchain_tools.py` wraps each `Source.discover()` as a
@@ -73,7 +74,7 @@ persistent connection isn't worth it at this scale). Built on it: an MCP
 fetch server as a deep-read fallback (`funnel.py`, off by default —
 `config.MCP_FETCH_ENABLED`), an MCP filesystem server for `index --mcp-dir`,
 and `mcp_server.py` exposing this agent's own `ask`/`research` as MCP tools
-over stdio (`mcp-serve`). See README's "MCP integrations" section.
+over stdio (`mcp-serve`). See README's "MCP: tools this agent uses, and using this agent as a tool" section.
 
 ## Running it
 ```

@@ -186,7 +186,7 @@ of only searching a pre-built index:
 - `agent/funnel.py` — discovery → embedding-based triage → deep read: PDF
   fetch + section extraction for arXiv; for other sources, full page text
   via an MCP fetch server if enabled (`config.MCP_FETCH_ENABLED`, off by
-  default — see "MCP integrations" below), else the abstract as a
+  default — see "MCP: tools this agent uses" below), else the abstract as a
   fallback. Non-English subquestions get translated to a short English
   search query via a bounded LLM call first — arXiv/Semantic Scholar
   otherwise return zero results for Russian queries. Each source is
@@ -270,18 +270,22 @@ answer, the conversation keeps going and reuses the same `ResearchState`
   `synthesize()` is given the prior Q&A pairs as history so "what about
   X"-style questions resolve correctly.
 
-## MCP integrations
+## MCP: tools this agent uses, and using this agent as a tool
 
-`providers/mcp_client.py` is a sync bridge over `langchain-mcp-adapters`
-(async-only) — the rest of the codebase is synchronous throughout, so this
-is the one place that spins an event loop. `get_mcp_tools(connections)`
-connects to an MCP server just long enough to list its tools, then returns
-them re-wrapped so `.invoke()` works from plain sync code; each actual call
-opens its own short-lived session (the library's model, not a
-persistent connection — fine at this project's scale, a single local
-user).
+This agent is both an **MCP client** (it can call out to other MCP servers
+for extra capabilities) and an **MCP server** (other MCP clients — Claude
+Code, Claude Desktop, etc. — can call it).
 
-Three integrations are built on top of it:
+`providers/mcp_client.py` is the shared piece: a sync bridge over
+`langchain-mcp-adapters` (async-only) — the rest of the codebase is
+synchronous throughout, so this is the one place that spins an event loop.
+`get_mcp_tools(connections)` connects to an MCP server just long enough to
+list its tools, then returns them re-wrapped so `.invoke()` works from
+plain sync code; each actual call opens its own short-lived session (the
+library's model, not a persistent connection — fine at this project's
+scale, a single local user).
+
+### MCP servers this agent calls out to (client side)
 
 - **Deep-read fallback via MCP fetch** (`funnel.py`, `config.MCP_FETCH_ENABLED`,
   **off by default**) — for non-arXiv candidates, fetches the full page
@@ -318,14 +322,34 @@ Three integrations are built on top of it:
   unconditionally. Note: its repo search matches best against short
   keyword queries, not full natural-language questions (found on a real
   run — see the module docstring).
-- **`mcp-serve`** — runs this agent itself as an MCP server (`mcp_server.py`,
-  stdio transport), exposing `ask`/`research` as tools for any MCP client
-  (Claude Code, Claude Desktop, etc.):
-  ```bash
-  python -m src.cli mcp-serve
-  ```
-  Both tools reuse the exact same `agent/research_runner.py` functions the
-  CLI and web UI call — no separate reimplementation.
+
+### Using this agent as an MCP server
+
+`python -m src.cli mcp-serve` runs `mcp_server.py` over stdio, exposing two
+tools — `ask` (local RAG over `corpus/`, no internet) and `research` (the
+full deep-research pipeline, can take a couple of minutes). Both reuse the
+exact `agent/research_runner.py` functions the CLI and web UI already call
+— no separate reimplementation.
+
+To register it with **Claude Code** (project- or user-level `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "local-research-agent": {
+      "command": "/absolute/path/to/local-research-agent/.venv/bin/python",
+      "args": ["-m", "src.cli", "mcp-serve"],
+      "cwd": "/absolute/path/to/local-research-agent"
+    }
+  }
+}
+```
+
+For **Claude Desktop**, add the same `local-research-agent` entry under
+`mcpServers` in its config file (`~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS), then restart the app. Either way, use the venv's own Python
+(not a bare `python`/`python3`) so the MCP process sees this project's
+installed dependencies without needing an active shell activation.
 
 ## Web search: Tavily (recommended) or local SearXNG
 
