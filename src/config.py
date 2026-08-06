@@ -6,9 +6,20 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# .env — секреты (API-ключи), НИКОГДА не коммитится (.gitignore). Не падаем,
+# если python-dotenv не установлен или файла нет — ключи тогда просто не
+# подхватятся, источники, которым они нужны (TavilySource), тихо отключатся.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / ".env")
+except ImportError:
+    pass
 CORPUS_DIR = REPO_ROOT / "corpus"
 INDEX_DIR = REPO_ROOT / ".index" / "lancedb"
 INDEX_TABLE = "chunks"

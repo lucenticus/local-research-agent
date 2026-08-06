@@ -8,4 +8,5 @@ pymupdf
 fastapi
 uvicorn
 httpx
+python-dotenv
 pytest

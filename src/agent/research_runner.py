@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +15,7 @@ from ..providers import embed, rerank
 from ..sources.arxiv import ArxivSource
 from ..sources.base import Source
 from ..sources.semantic_scholar import SemanticScholarSource
+from ..sources.tavily import TavilySource
 from ..sources.web import WebSource
 from ..store.lancedb_store import LanceDBStore
 from . import loop
@@ -55,7 +57,14 @@ class ResearchResult:
 
 
 def default_sources() -> list[Source]:
-    return [ArxivSource(), SemanticScholarSource(), WebSource()]
+    """Общий веб-источник: Tavily, если настроен `TAVILY_API_KEY` (управляемый
+    поиск, без CAPTCHA/rate-limit чужих движков — см. sources/tavily.py),
+    иначе локальный SearXNG (sources/web.py) — работает без ключа, но упирается
+    в блокировки части движков на стороне их провайдеров (проверено вручную
+    2026-08-06). Оба реализуют один и тот же протокол `Source`, funnel.py не
+    видит разницы."""
+    web_source: Source = TavilySource() if os.environ.get("TAVILY_API_KEY") else WebSource()
+    return [ArxivSource(), SemanticScholarSource(), web_source]
 
 
 def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:

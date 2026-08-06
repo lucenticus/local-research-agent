@@ -65,3 +65,17 @@ def test_run_research_assembles_result_from_state_and_hits(monkeypatch):
     assert result.candidates_count == 1
     assert result.candidates[0].title == "Paper"
     assert result.candidates[0].read is True
+
+
+def test_default_sources_prefers_tavily_when_key_configured(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "some-key")
+    sources = research_runner.default_sources()
+    web_source = sources[-1]
+    assert isinstance(web_source, research_runner.TavilySource)
+
+
+def test_default_sources_falls_back_to_searxng_without_key(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    sources = research_runner.default_sources()
+    web_source = sources[-1]
+    assert isinstance(web_source, research_runner.WebSource)

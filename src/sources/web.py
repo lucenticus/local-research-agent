@@ -27,18 +27,15 @@
 from __future__ import annotations
 
 import json
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from .. import config
+from ._common import is_article_url
 from .base import DiscoveredItem
 
 _TIMEOUT_SECONDS = 15
-
-# Страницы-листинги/индексы, не отдельные статьи — не содержательный источник.
-_NON_ARTICLE_URL_RE = re.compile(r"arxiv\.org/list/")
 
 
 class WebSource:
@@ -63,7 +60,7 @@ class WebSource:
     def _parse(self, body: dict):
         for result in body.get("results") or []:
             url = result.get("url") or ""
-            if not url or _NON_ARTICLE_URL_RE.search(url):
+            if not is_article_url(url):
                 continue
             yield DiscoveredItem(
                 id=f"web:{url}",
