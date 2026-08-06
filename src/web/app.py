@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .. import config
 from ..agent.research_runner import ResearchResult, run_research
 from ..store.lancedb_store import LanceDBStore
 
@@ -81,7 +82,8 @@ def _run_job(job: Job) -> None:
             with _jobs_lock:
                 job.progress.append(message)
 
-        store = LanceDBStore()
+        # Отдельная таблица от `ask`/`index` — см. config.RESEARCH_INDEX_TABLE.
+        store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
         result = run_research(job.question, store, on_progress=on_progress)
         with _jobs_lock:
             job.result = result

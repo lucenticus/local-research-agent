@@ -68,7 +68,7 @@ def test_full_job_lifecycle_reports_progress_and_result(monkeypatch):
         )
 
     monkeypatch.setattr(app_module, "run_research", fake_run_research)
-    monkeypatch.setattr(app_module, "LanceDBStore", lambda: object())
+    monkeypatch.setattr(app_module, "LanceDBStore", lambda table_name=None: object())
 
     client = TestClient(app_module.app)
     create_resp = client.post("/api/jobs", json={"question": "Кто такой кит?"})
@@ -99,7 +99,7 @@ def test_concurrent_job_is_rejected_with_409(monkeypatch):
         )
 
     monkeypatch.setattr(app_module, "run_research", fake_run_research)
-    monkeypatch.setattr(app_module, "LanceDBStore", lambda: object())
+    monkeypatch.setattr(app_module, "LanceDBStore", lambda table_name=None: object())
 
     client = TestClient(app_module.app)
     first = client.post("/api/jobs", json={"question": "first question"})
@@ -120,7 +120,7 @@ def test_job_reports_error_status_on_exception(monkeypatch):
         raise RuntimeError("something broke")
 
     monkeypatch.setattr(app_module, "run_research", fake_run_research)
-    monkeypatch.setattr(app_module, "LanceDBStore", lambda: object())
+    monkeypatch.setattr(app_module, "LanceDBStore", lambda table_name=None: object())
 
     client = TestClient(app_module.app)
     job_id = client.post("/api/jobs", json={"question": "q"}).json()["job_id"]

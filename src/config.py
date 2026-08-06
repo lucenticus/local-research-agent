@@ -12,6 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = REPO_ROOT / "corpus"
 INDEX_DIR = REPO_ROOT / ".index" / "lancedb"
 INDEX_TABLE = "chunks"
+# Отдельная таблица для `research` (Milestone 3+), в той же LanceDB-базе.
+# Найдено реальным прогоном 2026-08-06: `research` и `ask` изначально делили
+# одну таблицу — тестовый demo-корпус (corpus/) просачивался в источники
+# реальных research-ответов на никак не связанные вопросы (например,
+# заметка про hybrid retrieval попала в ответ про "AI агентов" только потому,
+# что была в том же индексе). `ask`/`index` работают с локальными файлами
+# corpus/, `research`/`serve` — с находками воронки; общий кэш между ними не
+# нужен и вреден.
+RESEARCH_INDEX_TABLE = "research_chunks"
 
 # Подтверждено реальным запуском на M4 Air 2026-08-04: репо существует и
 # грузится через mlx_lm.load (~2.9ГБ, уже был в HF-кэше этой машины). Проект

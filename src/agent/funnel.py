@@ -24,11 +24,21 @@ effort). Итоговый score триажа = косинус (семантич�
 между близкими по смыслу кандидатами, а не замена семантике (иначе
 популярная, но нерелевантная статья обходила бы точный, но малоцитируемый
 ответ).
+
+Кросс-источниковый дедуп по arXiv id (найдено реальным прогоном 2026-08-06):
+одна и та же статья находится и через `arxiv.py` (id вида `arxiv:XXXXvN`), и
+через общий веб-поиск (id вида `web:<url>` — например, ссылка на HTML-версию
+той же статьи на arxiv.org). Разные id -> `state.add_candidates` не видит,
+что это один и тот же кандидат, и статья дублируется в списке источников.
+`_canonical_candidate_id` нормализует любой arXiv-подобный id/URL к номеру
+статьи без версии — все варианты (abs/html/pdf, разные версии, найдено через
+любой источник) схлопываются в один кандидат.
 """
 
 from __future__ import annotations
 
 import math
+import re
 import tempfile
 import urllib.request
 import uuid
@@ -42,6 +52,20 @@ from ..sources.citations import lookup_citation_count
 from ..store.lancedb_store import Chunk, LanceDBStore
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
+
+_ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(?:v\d+)?")
+
+
+def _canonical_candidate_id(item: DiscoveredItem) -> str:
+    """arXiv-статьи — единый id независимо от источника обнаружения и URL-варианта."""
+    if item.source == "arxiv":
+        haystack = item.id
+    elif item.source == "semantic_scholar":
+        haystack = (item.meta.get("external_ids") or {}).get("ArXiv", "") or (item.url or "")
+    else:
+        haystack = item.url or ""
+    match = _ARXIV_ID_RE.search(haystack)
+    return f"arxiv:{match.group(1)}" if match else item.id
 
 _TRANSLATE_SYSTEM_PROMPT = (
     "Translate the user's question into a short English web-search query "
@@ -94,7 +118,7 @@ def _discover(
                 citation_count = lookup_citation_count(item.title)
             candidates.append(
                 Candidate(
-                    id=item.id,
+                    id=_canonical_candidate_id(item),
                     source=item.source,
                     title=item.title,
                     abstract=item.abstract,

@@ -104,8 +104,12 @@ def cmd_ask(args: argparse.Namespace) -> None:
 def cmd_research(args: argparse.Namespace) -> None:
     """Deep-research режим (Milestone 3): воронка + итеративный цикл поверх
     внешних источников (arXiv, Semantic Scholar, web), в отличие от `ask`,
-    который только ищет по уже построенному индексу."""
-    store = LanceDBStore()
+    который только ищет по уже построенному индексу.
+
+    Отдельная таблица от `ask`/`index` (config.RESEARCH_INDEX_TABLE) — иначе
+    demo-корпус из corpus/ просачивается в источники реальных ответов
+    (найдено реальным прогоном, см. DEVELOPMENT_PLAN.md)."""
+    store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
     result = run_research(args.question, store, on_progress=print)
     print()
     print(result.answer)

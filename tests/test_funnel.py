@@ -280,3 +280,81 @@ def test_run_passes_url_and_citation_count_to_chunks(monkeypatch):
 
     assert store.added_chunks[0].url == "https://arxiv.org/abs/1"
     assert store.added_chunks[0].citation_count == 42
+
+
+def test_canonical_id_same_paper_from_arxiv_source():
+    item = DiscoveredItem(id="arxiv:2508.11957v1", source="arxiv", title="T", abstract="a")
+    assert funnel._canonical_candidate_id(item) == "arxiv:2508.11957"
+
+
+def test_canonical_id_same_paper_from_web_abs_and_html_urls():
+    abs_item = DiscoveredItem(
+        id="web:https://arxiv.org/abs/2508.11957", source="web", title="T", abstract="a",
+        url="https://arxiv.org/abs/2508.11957",
+    )
+    html_item = DiscoveredItem(
+        id="web:https://arxiv.org/html/2508.11957v1", source="web", title="T", abstract="a",
+        url="https://arxiv.org/html/2508.11957v1",
+    )
+    assert funnel._canonical_candidate_id(abs_item) == "arxiv:2508.11957"
+    assert funnel._canonical_candidate_id(html_item) == "arxiv:2508.11957"
+
+
+def test_canonical_id_semantic_scholar_via_external_ids():
+    item = DiscoveredItem(
+        id="s2:abc123", source="semantic_scholar", title="T", abstract="a",
+        meta={"external_ids": {"ArXiv": "2508.11957"}},
+    )
+    assert funnel._canonical_candidate_id(item) == "arxiv:2508.11957"
+
+
+def test_canonical_id_non_arxiv_item_unchanged():
+    item = DiscoveredItem(id="web:https://example.com/blog", source="web", title="T", abstract="a")
+    assert funnel._canonical_candidate_id(item) == "web:https://example.com/blog"
+
+
+def test_discover_produces_matching_canonical_ids_for_same_paper():
+    """`_discover` сам не дедуплицирует (это делает `state.add_candidates`),
+    но обязан отдать ОДИНАКОВЫЙ id для одной статьи независимо от источника —
+    иначе дедуп на уровне state не сработает."""
+    arxiv_item = DiscoveredItem(
+        id="arxiv:2508.11957v1", source="arxiv", title="A Comprehensive Review",
+        abstract="review",
+    )
+    web_item = DiscoveredItem(
+        id="web:https://arxiv.org/html/2508.11957v1", source="web",
+        title="A Comprehensive Review (html mirror)", abstract="review",
+        url="https://arxiv.org/html/2508.11957v1",
+    )
+    arxiv_source = _FakeSource("arxiv", [arxiv_item])
+    web_source = _FakeSource("web", [web_item])
+
+    candidates = funnel._discover(SubQuestion(text="q"), [arxiv_source, web_source], discovery_limit=5)
+    assert [c.id for c in candidates] == ["arxiv:2508.11957", "arxiv:2508.11957"]
+
+
+def test_run_dedups_same_arxiv_paper_found_via_multiple_sources(monkeypatch):
+    """Регрессия на реальный баг (2026-08-06): одна и та же статья находилась
+    и через arxiv.py, и через веб-поиск (html-версия) с разными id и
+    дублировалась в списке источников реального ответа."""
+    _mock_embed(monkeypatch, {"review": [1.0, 0.0]})
+    arxiv_item = DiscoveredItem(
+        id="arxiv:2508.11957v1", source="arxiv", title="A Comprehensive Review",
+        abstract="review",
+    )
+    web_item = DiscoveredItem(
+        id="web:https://arxiv.org/html/2508.11957v1", source="web",
+        title="A Comprehensive Review (html mirror)", abstract="review",
+        url="https://arxiv.org/html/2508.11957v1",
+    )
+    arxiv_source = _FakeSource("arxiv", [arxiv_item])
+    web_source = _FakeSource("web", [web_item])
+    sq = SubQuestion(text="review")
+    state = ResearchState(question="review")
+    store = _FakeStore()
+
+    funnel.run(sq, [arxiv_source, web_source], state, store)
+
+    assert [c.id for c in state.candidates] == ["arxiv:2508.11957"]
+    # Первый найденный источник (arxiv.py) побеждает - его заголовок сохраняется.
+    assert state.candidates[0].title == "A Comprehensive Review"

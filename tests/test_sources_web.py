@@ -79,3 +79,23 @@ def test_uses_configured_base_url_by_default(monkeypatch):
     monkeypatch.setattr(config, "SEARXNG_BASE_URL", "http://example-searxng:1234")
     source = WebSource()
     assert source._base_url == "http://example-searxng:1234"
+
+
+def test_discover_filters_out_arxiv_listing_pages(monkeypatch):
+    """Регрессия на реальный баг (2026-08-06): arxiv.org/list/... — страница-
+    листинг (список последних публикаций), а не отдельная статья, но
+    проходила как полноценный источник в реальном ответе."""
+    payload = {
+        "results": [
+            {"title": "Artificial Intelligence - arXiv", "content": "recent papers",
+             "url": "https://arxiv.org/list/cs.AI/recent"},
+            {"title": "Real Paper", "content": "abstract",
+             "url": "https://arxiv.org/abs/2508.11957"},
+        ]
+    }
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda request, timeout=None: _FakeResponse(payload)
+    )
+
+    items = WebSource(base_url="http://localhost:8888").discover("q", limit=5)
+    assert [i.title for i in items] == ["Real Paper"]

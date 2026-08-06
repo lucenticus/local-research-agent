@@ -16,11 +16,18 @@
 Без поднятого контейнера `discover()` тихо возвращает пустой список (не
 бросает исключение) — funnel.py и так переживает недоступность источника,
 воронка просто продолжает с тем, что нашли остальные источники.
+
+Найдено реальным прогоном 2026-08-06: общий веб-поиск иногда находит не
+статьи, а страницы-листинги (например, `arxiv.org/list/cs.AI/recent` —
+список последних публикаций по категории) — это навигационная страница без
+собственного содержательного текста по вопросу, но она проходила как
+полноценный источник. Такие URL отфильтровываются в `_parse`.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +36,9 @@ from .. import config
 from .base import DiscoveredItem
 
 _TIMEOUT_SECONDS = 15
+
+# Страницы-листинги/индексы, не отдельные статьи — не содержательный источник.
+_NON_ARTICLE_URL_RE = re.compile(r"arxiv\.org/list/")
 
 
 class WebSource:
@@ -53,7 +63,7 @@ class WebSource:
     def _parse(self, body: dict):
         for result in body.get("results") or []:
             url = result.get("url") or ""
-            if not url:
+            if not url or _NON_ARTICLE_URL_RE.search(url):
                 continue
             yield DiscoveredItem(
                 id=f"web:{url}",
