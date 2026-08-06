@@ -49,6 +49,7 @@ from ..ingest.extract import Section, extract_pdf_sections
 from ..providers import embed, llm
 from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
+from ..sources.langchain_tools import make_discover_tool
 from ..store.lancedb_store import Chunk, LanceDBStore
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
@@ -105,7 +106,11 @@ def _discover(
     candidates: list[Candidate] = []
     for source in sources:
         try:
-            items: list[DiscoveredItem] = source.discover(query, limit=discovery_limit)
+            # Источник вызывается через LangChain tool-интерфейс
+            # (`sources/langchain_tools.py`), а не напрямую `.discover()` —
+            # сама логика discovery не меняется, только точка вызова.
+            tool = make_discover_tool(source)
+            items: list[DiscoveredItem] = tool.invoke({"query": query, "limit": discovery_limit})
         except Exception:
             # Внешний источник недоступен/троттлит — воронка продолжает с тем,
             # что нашли остальные источники, а не падает целиком.

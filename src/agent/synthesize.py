@@ -1,18 +1,26 @@
 """Single-pass синтез: найденные чанки -> ответ с цитатами [n].
 
 Один вызов LLM на переиспользуемом провайдере (§1: не инстанцировать модель
-повторно). `gaps` (Milestone 3, agent/loop.py) — подвопросы, не закрытые до
-исчерпания бюджета: честно передаём их модели, чтобы ответ отражал реальные
-пробелы, а не делал вид, что покрыто всё (§5: "цикл обязан завершаться по
-budget... тогда честно сказать в ответе").
+повторно) — через LCEL-цепочку `prompt | ChatMLX() | StrOutputParser()`.
+`ChatMLX` (providers/langchain_llm.py) сам сворачивает system+human обратно в
+пару для MLX chat-template, резидентная модель по-прежнему одна на процесс,
+эта цепочка не заводит вторую.
+
+`gaps` (Milestone 3, agent/loop.py) — подвопросы, не закрытые до исчерпания
+бюджета: честно передаём их модели, чтобы ответ отражал реальные пробелы, а
+не делал вид, что покрыто всё (§5: "цикл обязан завершаться по budget...
+тогда честно сказать в ответе").
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
 from .. import config
-from ..providers import llm
+from ..providers.langchain_llm import ChatMLX
 
 SYSTEM_PROMPT = (
     "Ты — исследовательский ассистент. Отвечай ТОЛЬКО на основе приведённого "
@@ -20,6 +28,14 @@ SYSTEM_PROMPT = (
     "контекста в квадратных скобках, например [1]. Если ответа нет в "
     "контексте — прямо скажи об этом."
 )
+
+# Сам текст context/gaps/history подставляется значением переменной
+# `user_message`, а не встраивается в тело шаблона — f-string-форматирование
+# ChatPromptTemplate не переинтерпретирует фигурные скобки ВНУТРИ значения
+# (в чанках из веба их сколько угодно: код, LaTeX, JSON), только в самом
+# шаблоне.
+_PROMPT = ChatPromptTemplate.from_messages([("system", SYSTEM_PROMPT), ("human", "{user_message}")])
+_CHAIN = _PROMPT | ChatMLX() | StrOutputParser()
 
 
 def _format_context(chunks: list[dict[str, Any]]) -> str:
@@ -63,5 +79,4 @@ def synthesize(
             "Ответь на основе того, что есть в контексте, и явно укажи, какая "
             "часть вопроса осталась без достаточного подтверждения."
         )
-    prompt = llm.build_chat_prompt(SYSTEM_PROMPT, user_message)
-    return llm.generate(prompt)
+    return _CHAIN.invoke({"user_message": user_message})

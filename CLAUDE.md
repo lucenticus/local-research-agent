@@ -56,9 +56,18 @@ that always apply.
 ## Stack
 Qwen3.5-4B (Q4, MLX, own copy) · bge-m3 (dense+sparse) ·
 bge-reranker-v2-m3 (on demand) · LanceDB (embedded) · arXiv / Semantic
-Scholar / web · LangGraph (orchestration in `agent/loop.py`) · LangChain-core
-(`providers/langchain_llm.py`, `providers/langchain_embeddings.py` — thin
-wrappers over the resident MLX models, not a separate implementation).
+Scholar / web · LangGraph (orchestration in `agent/loop.py`) · LangChain:
+`providers/langchain_llm.py`/`langchain_embeddings.py` wrap the resident MLX
+models (not a separate implementation) as `BaseChatModel`/`Embeddings`;
+`sources/langchain_tools.py` wraps each `Source.discover()` as a
+`StructuredTool` (`agent/funnel.py` calls it via `.invoke()`);
+`store/lancedb_store.py::LanceDBStore` implements `VectorStore`
+(`agent/research_runner.retrieve()` goes through `.as_retriever()`);
+`agent/synthesize.py` is an LCEL chain (`prompt | ChatMLX() |
+StrOutputParser()`). The reranker (`providers/rerank.py`) and the
+gap-check/faithfulness heuristics in `agent/loop.py` stay on their existing
+dict-based interfaces on purpose — no functional need to route them through
+LangChain, and it would break their test doubles for no benefit.
 
 ## Running it
 ```

@@ -9,16 +9,29 @@ lancedb 0.36.0). Полный rebuild таблицы на каждой инде�
 со стеммером `language="Russian"` уже даёт лексический сигнал на кириллице
 (проверено вручную на этой машине) — использовать оба было бы дублирующим
 сигналом без явной пользы на масштабе этого проекта.
-"""
+
+`LanceDBStore` реализует `langchain_core.vectorstores.VectorStore`
+(`similarity_search`/`add_texts`/`from_texts`/`embeddings`) поверх тех же
+`rebuild`/`add_chunks`/`search_hybrid` — это чисто аддитивный слой для
+интеропа со стандартным LangChain-кодом (`.as_retriever()`, см.
+`agent/research_runner.retrieve()`), исходные методы и их поведение (в т.ч.
+url/citation_count-сентинелы, инкрементальный `add_chunks`) не меняются ни
+на бит — на них по-прежнему завязаны `agent/funnel.py`/`agent/loop.py` и
+существующие тесты."""
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import lancedb
 from lancedb.index import FTS
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
+from langchain_core.vectorstores import VectorStore
 
 from .. import config
 
@@ -39,12 +52,25 @@ class Chunk:
     citation_count: int = -1
 
 
-class LanceDBStore:
-    def __init__(self, db_path: Path | None = None, table_name: str | None = None):
+class LanceDBStore(VectorStore):
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        table_name: str | None = None,
+        embedding: Embeddings | None = None,
+    ):
         self._db_path = db_path or config.INDEX_DIR
         self._table_name = table_name or config.INDEX_TABLE
         self._db: Any = None
         self._table: Any = None
+        # Ленивый дефолт (не грузит модель здесь, см. providers/embed.py) —
+        # большинство конструкторов LanceDBStore по кодовой базе не передают
+        # embedding вовсе, им нужны только rebuild/add_chunks/search_hybrid.
+        self._embedding = embedding
+
+    @property
+    def embeddings(self) -> Embeddings | None:
+        return self._embedding
 
     def _connect(self) -> Any:
         if self._db is None:
@@ -142,3 +168,80 @@ class LanceDBStore:
             .limit(k)
             .to_list()
         )
+
+    # --- langchain_core.vectorstores.VectorStore ---
+
+    def _default_embedding(self) -> Embeddings:
+        if self._embedding is None:
+            from ..providers.langchain_embeddings import MLXBGEEmbeddings
+
+            self._embedding = MLXBGEEmbeddings()
+        return self._embedding
+
+    def similarity_search(self, query: str, k: int = 4, **kwargs: Any) -> list[Document]:
+        """`.as_retriever()`-совместимый поиск — под капотом тот же
+        `search_hybrid`, эмбеддинг запроса берётся из `self.embeddings`
+        (дефолт — `MLXBGEEmbeddings`, та же резидентная bge-m3, что и везде
+        в проекте, не отдельная модель)."""
+        query_vector = self._default_embedding().embed_query(query)
+        hits = self.search_hybrid(query, query_vector, k=k)
+        return [hit_to_document(hit) for hit in hits]
+
+    def add_texts(
+        self,
+        texts: Iterable[str],
+        metadatas: list[dict[str, Any]] | None = None,
+        *,
+        ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[str]:
+        texts = list(texts)
+        metadatas = metadatas or [{} for _ in texts]
+        ids = ids or [str(uuid.uuid4()) for _ in texts]
+        vectors = self._default_embedding().embed_documents(texts)
+        chunks = [
+            Chunk(
+                id=id_,
+                text=text,
+                source_id=meta.get("source_id", ""),
+                source_title=meta.get("source_title", ""),
+                section=meta.get("section", ""),
+                vector=vector,
+                url=meta.get("url") or "",
+                citation_count=meta["citation_count"] if meta.get("citation_count") is not None else -1,
+            )
+            for id_, text, meta, vector in zip(ids, texts, metadatas, vectors, strict=True)
+        ]
+        self.add_chunks(chunks)
+        return ids
+
+    @classmethod
+    def from_texts(
+        cls,
+        texts: list[str],
+        embedding: Embeddings,
+        metadatas: list[dict[str, Any]] | None = None,
+        *,
+        ids: list[str] | None = None,
+        db_path: Path | None = None,
+        table_name: str | None = None,
+        **kwargs: Any,
+    ) -> "LanceDBStore":
+        store = cls(db_path=db_path, table_name=table_name, embedding=embedding)
+        store.add_texts(texts, metadatas=metadatas, ids=ids)
+        return store
+
+
+def hit_to_document(hit: dict[str, Any]) -> Document:
+    """`search_hybrid`/`search_dense`-хит -> LangChain `Document` (текст +
+    остальные поля как metadata) — используется `similarity_search` и
+    `agent/research_runner.retrieve()` (через `.as_retriever()`)."""
+    metadata = {k: v for k, v in hit.items() if k != "text"}
+    return Document(page_content=hit.get("text", ""), metadata=metadata)
+
+
+def document_to_hit(document: Document) -> dict[str, Any]:
+    """Обратное преобразование — восстанавливает исходную форму хита
+    (`{"text": ..., "source_id": ..., ...}`), которую ожидают
+    `synthesize.py`/`evaluate.py`/`cli.py`."""
+    return {"text": document.page_content, **document.metadata}
