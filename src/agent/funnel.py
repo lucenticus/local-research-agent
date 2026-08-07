@@ -104,6 +104,21 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _to_candidate(item: DiscoveredItem) -> Candidate:
+    citation_count = item.citation_count
+    if citation_count is None and item.source == "arxiv":
+        # arXiv не отдаёт цитируемость сам — обогащаем через OpenAlex
+        # (best effort: не найдено/недоступно -> остаётся None).
+        citation_count = lookup_citation_count(item.title)
+    return Candidate(
+        id=_canonical_candidate_id(item),
+        source=item.source,
+        title=item.title,
+        abstract=item.abstract,
+        meta={**item.meta, "url": item.url, "year": item.year, "citation_count": citation_count},
+    )
+
+
 def _discover(
     sub_question: SubQuestion, sources: list[Source], discovery_limit: int
 ) -> list[Candidate]:
@@ -120,22 +135,7 @@ def _discover(
             # Внешний источник недоступен/троттлит — воронка продолжает с тем,
             # что нашли остальные источники, а не падает целиком.
             continue
-        for item in items:
-            citation_count = item.citation_count
-            if citation_count is None and item.source == "arxiv":
-                # arXiv не отдаёт цитируемость сам — обогащаем через OpenAlex
-                # (best effort: не найдено/недоступно -> остаётся None).
-                citation_count = lookup_citation_count(item.title)
-            candidates.append(
-                Candidate(
-                    id=_canonical_candidate_id(item),
-                    source=item.source,
-                    title=item.title,
-                    abstract=item.abstract,
-                    meta={**item.meta, "url": item.url, "year": item.year,
-                          "citation_count": citation_count},
-                )
-            )
+        candidates.extend(_to_candidate(item) for item in items)
     return candidates
 
 

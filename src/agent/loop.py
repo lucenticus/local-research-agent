@@ -57,7 +57,7 @@ from ..store.lancedb_store import LanceDBStore
 from . import evaluate, funnel, planner
 from . import synthesize as synthesize_module
 from .progress import ProgressCallback, emit as _emit
-from .state import Budget, ResearchState, SubQuestionStatus
+from .state import Budget, ResearchState, SubQuestion, SubQuestionStatus
 
 
 def _distinct_sources(hits: list[dict]) -> set[str]:
@@ -130,9 +130,24 @@ def _node_plan(gs: _GraphState) -> dict:
     return {"active_texts": active_texts}
 
 
+def _advance_sub_question(
+    sq: SubQuestion, gs: _GraphState, discovery_limit: int, force_discovery: bool
+) -> None:
+    """Один подвопрос за один проход: discover ещё, если не покрыт (или
+    покрытие форсировано после faithfulness-retry), затем перепроверить и
+    отметить покрытым, если да."""
+    rs = gs["research_state"]
+    if force_discovery or not _is_covered(gs["store"], sq):
+        funnel.run(
+            sq, gs["sources"], rs, gs["store"],
+            discovery_limit=discovery_limit, on_progress=gs["on_progress"],
+        )
+    if _is_covered(gs["store"], sq):
+        rs.cover(sq.text)
+
+
 def _node_run_pass(gs: _GraphState) -> dict:
     rs = gs["research_state"]
-    open_sqs = _active_open(gs)
     # Инкремент — ПОСЛЕ прохода (см. ниже), не до: если считать проход
     # начатым раньше, budget_exhausted() внутри for-loop триггерится тем же
     # инкрементом и последний разрешённый проход всегда пропадает вхолостую
@@ -143,18 +158,11 @@ def _node_run_pass(gs: _GraphState) -> dict:
     # повторный discover() с тем же запросом просто повторит уже известную
     # выдачу и не найдёт ничего нового.
     discovery_limit = config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE * current_pass
-    force_discovery = gs["force_discovery"]
 
-    for sq in open_sqs:
+    for sq in _active_open(gs):
         if rs.budget_exhausted():
             break
-        if force_discovery or not _is_covered(gs["store"], sq):
-            funnel.run(
-                sq, gs["sources"], rs, gs["store"],
-                discovery_limit=discovery_limit, on_progress=gs["on_progress"],
-            )
-        if _is_covered(gs["store"], sq):
-            rs.cover(sq.text)
+        _advance_sub_question(sq, gs, discovery_limit, gs["force_discovery"])
 
     rs.iterations += 1
     return {"force_discovery": False}  # только на один проход сразу после retry
@@ -200,6 +208,9 @@ def _route_after_faithfulness(gs: _GraphState) -> str:
     return "run_pass"  # переоткрыто retry'ем — ещё один форсированный проход
 
 
+_PASS_ROUTES = {"run_pass": "run_pass", "check_faithfulness": "check_faithfulness", "finalize": "finalize"}
+
+
 def _build_graph():
     graph = StateGraph(_GraphState)
     graph.add_node("plan", _node_plan)
@@ -208,14 +219,11 @@ def _build_graph():
     graph.add_node("finalize", _node_finalize)
 
     graph.add_edge(START, "plan")
-    graph.add_conditional_edges(
-        "plan", _route_pass,
-        {"run_pass": "run_pass", "check_faithfulness": "check_faithfulness", "finalize": "finalize"},
-    )
-    graph.add_conditional_edges(
-        "run_pass", _route_pass,
-        {"run_pass": "run_pass", "check_faithfulness": "check_faithfulness", "finalize": "finalize"},
-    )
+    # "plan" и "run_pass" ведут к одному и тому же решению — куда дальше
+    # (ещё проход / faithfulness-проверка / готово) — по одной и той же
+    # `_route_pass`, отсюда общая карта переходов.
+    graph.add_conditional_edges("plan", _route_pass, _PASS_ROUTES)
+    graph.add_conditional_edges("run_pass", _route_pass, _PASS_ROUTES)
     graph.add_conditional_edges(
         "check_faithfulness", _route_after_faithfulness,
         {"run_pass": "run_pass", "finalize": "finalize"},
