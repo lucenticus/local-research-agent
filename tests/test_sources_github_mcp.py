@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 
+from src.providers import mcp_client
 from src.sources import github_mcp
 from src.sources.github_mcp import GitHubMCPSource
 
@@ -26,7 +27,7 @@ def _repos_payload(items):
 
 def test_discover_returns_empty_list_without_token(monkeypatch):
     monkeypatch.setattr(
-        github_mcp, "get_mcp_tools",
+        mcp_client, "get_mcp_tools",
         lambda connections: (_ for _ in ()).throw(AssertionError("must not reach Docker without a token")),
     )
     assert GitHubMCPSource(token=None).discover("query", limit=5) == []
@@ -43,7 +44,7 @@ def test_discover_parses_repositories(monkeypatch):
         ]
     )
     fake_tool = _FakeTool(payload)
-    monkeypatch.setattr(github_mcp, "get_mcp_tools", lambda connections: [fake_tool])
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [fake_tool])
 
     items = GitHubMCPSource(token="fake-token").discover("kv cache compression", limit=5)
     assert len(items) == 1
@@ -60,13 +61,13 @@ def test_discover_parses_repositories(monkeypatch):
 
 def test_discover_skips_items_without_full_name_or_url(monkeypatch):
     payload = _repos_payload([{"description": "no full_name/url"}])
-    monkeypatch.setattr(github_mcp, "get_mcp_tools", lambda connections: [_FakeTool(payload)])
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [_FakeTool(payload)])
 
     assert GitHubMCPSource(token="fake-token").discover("q", limit=5) == []
 
 
 def test_discover_returns_empty_list_on_invalid_json(monkeypatch):
-    monkeypatch.setattr(github_mcp, "get_mcp_tools", lambda connections: [_FakeTool("not json")])
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [_FakeTool("not json")])
     assert GitHubMCPSource(token="fake-token").discover("q", limit=5) == []
 
 
@@ -74,7 +75,7 @@ def test_discover_returns_empty_list_when_get_mcp_tools_fails(monkeypatch):
     def _raise(connections):
         raise RuntimeError("docker not available")
 
-    monkeypatch.setattr(github_mcp, "get_mcp_tools", _raise)
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", _raise)
     assert GitHubMCPSource(token="fake-token").discover("q", limit=5) == []
 
 
@@ -85,7 +86,7 @@ def test_get_tool_only_calls_get_mcp_tools_once_per_instance(monkeypatch):
         calls["n"] += 1
         return [_FakeTool(_repos_payload([]))]
 
-    monkeypatch.setattr(github_mcp, "get_mcp_tools", fake_get_mcp_tools)
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", fake_get_mcp_tools)
     source = GitHubMCPSource(token="fake-token")
 
     source.discover("a", limit=1)

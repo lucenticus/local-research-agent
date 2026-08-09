@@ -51,7 +51,7 @@ from .. import config
 from ..ingest.chunk import chunk_sections, chunk_text
 from ..ingest.extract import Section, extract_pdf_sections
 from ..providers import embed, llm
-from ..providers.mcp_client import content_to_text, get_mcp_tools
+from ..providers.mcp_client import content_to_text, get_single_tool
 from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
@@ -192,18 +192,14 @@ _mcp_fetch_tool: Any = "unset"
 def _get_mcp_fetch_tool() -> Any:
     global _mcp_fetch_tool
     if _mcp_fetch_tool == "unset":
-        try:
-            connections = {
-                "fetch": {
-                    "transport": "stdio",
-                    "command": config.MCP_FETCH_COMMAND,
-                    "args": config.MCP_FETCH_ARGS,
-                }
+        connections = {
+            "fetch": {
+                "transport": "stdio",
+                "command": config.MCP_FETCH_COMMAND,
+                "args": config.MCP_FETCH_ARGS,
             }
-            tools = get_mcp_tools(connections)
-            _mcp_fetch_tool = next((t for t in tools if t.name == "fetch"), None)
-        except Exception:
-            _mcp_fetch_tool = None
+        }
+        _mcp_fetch_tool = get_single_tool(connections, "fetch")
     return _mcp_fetch_tool
 
 

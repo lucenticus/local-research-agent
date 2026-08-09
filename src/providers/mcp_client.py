@@ -48,6 +48,19 @@ def get_mcp_tools(connections: dict[str, Any], *, server_name: str | None = None
     return [_wrap_sync(t) for t in asyncio.run(_fetch())]
 
 
+def get_single_tool(connections: dict[str, Any], tool_name: str) -> StructuredTool | None:
+    """`get_mcp_tools` + pick one named tool, `None` on ANY failure (server
+    not installed/reachable, or the server just doesn't have that tool) —
+    the shape every lazily-cached single-tool MCP integration in this
+    project needs (funnel.py's MCP fetch fallback, sources/github_mcp.py's
+    `GitHubMCPSource`), extracted here instead of duplicated in both."""
+    try:
+        tools = get_mcp_tools(connections)
+    except Exception:
+        return None
+    return next((t for t in tools if t.name == tool_name), None)
+
+
 def content_to_text(result: Any) -> str:
     """MCP tool results come back as a list of LangChain content blocks
     (`{"type": "text", "text": ...}`, images, etc. — see

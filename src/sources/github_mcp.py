@@ -35,7 +35,7 @@ import json
 import os
 from typing import Any
 
-from ..providers.mcp_client import content_to_text, get_mcp_tools
+from ..providers.mcp_client import content_to_text, get_single_tool
 from .base import DiscoveredItem
 
 _CONNECTIONS_TEMPLATE = {
@@ -61,14 +61,10 @@ class GitHubMCPSource:
             if not self._token:
                 self._tool = None
             else:
-                try:
-                    connections = {
-                        "github": {**_CONNECTIONS_TEMPLATE, "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": self._token}}
-                    }
-                    tools = get_mcp_tools(connections)
-                    self._tool = next((t for t in tools if t.name == "search_repositories"), None)
-                except Exception:
-                    self._tool = None
+                connections = {
+                    "github": {**_CONNECTIONS_TEMPLATE, "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": self._token}}
+                }
+                self._tool = get_single_tool(connections, "search_repositories")
         return self._tool
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:

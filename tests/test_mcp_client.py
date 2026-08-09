@@ -48,6 +48,30 @@ def test_get_mcp_tools_wraps_async_only_tools_for_sync_invoke(monkeypatch):
     assert result == [{"type": "text", "text": "content of /tmp/x.md"}]
 
 
+def test_get_single_tool_returns_matching_tool_by_name(monkeypatch):
+    other = _FakeAsyncTool()
+    other.name = "other_tool"
+    wanted = _FakeAsyncTool()
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [other, wanted])
+
+    assert mcp_client.get_single_tool({}, "read_text_file") is wanted
+
+
+def test_get_single_tool_returns_none_when_tool_name_not_found(monkeypatch):
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [_FakeAsyncTool()])
+
+    assert mcp_client.get_single_tool({}, "does_not_exist") is None
+
+
+def test_get_single_tool_returns_none_when_get_mcp_tools_raises(monkeypatch):
+    def _raise(connections):
+        raise RuntimeError("server not installed")
+
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", _raise)
+
+    assert mcp_client.get_single_tool({}, "read_text_file") is None
+
+
 def test_content_to_text_extracts_and_joins_text_blocks():
     blocks = [
         {"type": "text", "text": "hello"},

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from src.agent import funnel
 from src.agent.state import Budget, Candidate, ResearchState, SubQuestion
-from src.providers import embed, llm
+from src.providers import embed, llm, mcp_client
 from src.sources.base import DiscoveredItem
 
 
@@ -354,7 +354,7 @@ def test_deep_read_ignores_mcp_fetch_when_disabled(monkeypatch):
     _reset_mcp_fetch_cache(monkeypatch)
     monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", False)
     monkeypatch.setattr(
-        funnel, "get_mcp_tools",
+        mcp_client, "get_mcp_tools",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("MCP must not be reached when disabled")),
     )
     candidate = Candidate(id="a", source="web", title="T", abstract="short abstract", meta={"url": "https://x/y"})
@@ -367,7 +367,7 @@ def test_deep_read_uses_mcp_fetch_full_text_when_enabled(monkeypatch):
     _reset_mcp_fetch_cache(monkeypatch)
     monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", True)
     fake_tool = _FakeMCPTool(text="full page body, much longer than the abstract")
-    monkeypatch.setattr(funnel, "get_mcp_tools", lambda connections: [fake_tool_with_name(fake_tool)])
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [fake_tool_with_name(fake_tool)])
     candidate = Candidate(id="a", source="web", title="T", abstract="short abstract", meta={"url": "https://x/y"})
 
     sections = funnel._deep_read_sections(candidate)
@@ -381,7 +381,7 @@ def test_deep_read_falls_back_to_abstract_when_mcp_fetch_fails(monkeypatch):
     _reset_mcp_fetch_cache(monkeypatch)
     monkeypatch.setattr(funnel.config, "MCP_FETCH_ENABLED", True)
     fake_tool = _FakeMCPTool(raise_error=True)
-    monkeypatch.setattr(funnel, "get_mcp_tools", lambda connections: [fake_tool_with_name(fake_tool)])
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", lambda connections: [fake_tool_with_name(fake_tool)])
     candidate = Candidate(id="a", source="web", title="T", abstract="short abstract", meta={"url": "https://x/y"})
 
     sections = funnel._deep_read_sections(candidate)
@@ -397,7 +397,7 @@ def test_get_mcp_fetch_tool_only_lists_tools_once(monkeypatch):
         calls["n"] += 1
         return [fake_tool_with_name(_FakeMCPTool(text="x"))]
 
-    monkeypatch.setattr(funnel, "get_mcp_tools", fake_get_mcp_tools)
+    monkeypatch.setattr(mcp_client, "get_mcp_tools", fake_get_mcp_tools)
 
     funnel._get_mcp_fetch_tool()
     funnel._get_mcp_fetch_tool()
