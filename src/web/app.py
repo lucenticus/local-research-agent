@@ -134,6 +134,27 @@ def _run_job(job: Job, session: Session, run: Any) -> None:
             _current_job_id = None
 
 
+def _require_question(raw: str) -> str:
+    question = raw.strip()
+    if not question:
+        raise HTTPException(400, "Пустой вопрос")
+    return question
+
+
+def _claim_job_slot(session_id: str, question: str) -> Job:
+    """Вызывается уже под `_jobs_lock`. Держит инвариант "не больше одного
+    research()-прогона одновременно" (§1 CLAUDE.md — нельзя грузить/держать
+    несколько тяжёлых моделей параллельно): если слот занят — 409 и ничего
+    не регистрируется; иначе заводит `Job` и сразу же занимает слот им."""
+    global _current_job_id
+    if _current_job_id is not None:
+        raise HTTPException(409, "Уже выполняется другой research-запрос — дождитесь его завершения")
+    job = Job(id=str(uuid.uuid4()), session_id=session_id, question=question)
+    _jobs[job.id] = job
+    _current_job_id = job.id
+    return job
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(_STATIC_DIR / "index.html")
@@ -141,23 +162,16 @@ def index() -> FileResponse:
 
 @app.post("/api/jobs")
 def create_job(payload: ResearchRequest) -> dict[str, Any]:
-    global _current_job_id
-    question = payload.question.strip()
-    if not question:
-        raise HTTPException(400, "Пустой вопрос")
+    question = _require_question(payload.question)
 
     with _jobs_lock:
-        if _current_job_id is not None:
-            raise HTTPException(
-                409, "Уже выполняется другой research-запрос — дождитесь его завершения"
-            )
         session_id = str(uuid.uuid4())
+        job = _claim_job_slot(session_id, question)
         # Отдельная таблица от `ask`/`index` — см. config.RESEARCH_INDEX_TABLE.
+        # Создаётся только после успешного _claim_job_slot — если слот занят,
+        # незачем заводить сессию, которой некому будет воспользоваться.
         session = Session(id=session_id, store=LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE))
         _sessions[session_id] = session
-        job = Job(id=str(uuid.uuid4()), session_id=session_id, question=question)
-        _jobs[job.id] = job
-        _current_job_id = job.id
 
     run = lambda on_progress: run_research(job.question, session.store, on_progress=on_progress)
     threading.Thread(target=_run_job, args=(job, session, run), daemon=True).start()
@@ -166,10 +180,7 @@ def create_job(payload: ResearchRequest) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/followup")
 def create_followup(session_id: str, payload: FollowupRequest) -> dict[str, Any]:
-    global _current_job_id
-    question = payload.question.strip()
-    if not question:
-        raise HTTPException(400, "Пустой вопрос")
+    question = _require_question(payload.question)
 
     with _jobs_lock:
         session = _sessions.get(session_id)
@@ -177,13 +188,7 @@ def create_followup(session_id: str, payload: FollowupRequest) -> dict[str, Any]
             raise HTTPException(404, "Неизвестная сессия — сначала задайте исходный вопрос")
         if session.state is None:
             raise HTTPException(409, "Исходный запрос этой сессии ещё не завершён")
-        if _current_job_id is not None:
-            raise HTTPException(
-                409, "Уже выполняется другой research-запрос — дождитесь его завершения"
-            )
-        job = Job(id=str(uuid.uuid4()), session_id=session_id, question=question)
-        _jobs[job.id] = job
-        _current_job_id = job.id
+        job = _claim_job_slot(session_id, question)
 
     run = lambda on_progress: run_followup(
         job.question, session.state, session.store,

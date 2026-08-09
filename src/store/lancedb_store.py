@@ -52,6 +52,22 @@ class Chunk:
     citation_count: int = -1
 
 
+def _rows(chunks: list[Chunk]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": c.id,
+            "text": c.text,
+            "source_id": c.source_id,
+            "source_title": c.source_title,
+            "section": c.section,
+            "vector": c.vector,
+            "url": c.url,
+            "citation_count": c.citation_count,
+        }
+        for c in chunks
+    ]
+
+
 class LanceDBStore(VectorStore):
     def __init__(
         self,
@@ -86,20 +102,7 @@ class LanceDBStore(VectorStore):
                 db.drop_table(self._table_name)
             self._table = None
             return
-        rows = [
-            {
-                "id": c.id,
-                "text": c.text,
-                "source_id": c.source_id,
-                "source_title": c.source_title,
-                "section": c.section,
-                "vector": c.vector,
-                "url": c.url,
-                "citation_count": c.citation_count,
-            }
-            for c in chunks
-        ]
-        self._table = db.create_table(self._table_name, data=rows, mode="overwrite")
+        self._table = db.create_table(self._table_name, data=_rows(chunks), mode="overwrite")
         self._table.create_index("text", config=FTS(language="Russian", stem=True))
 
     def add_chunks(self, chunks: list[Chunk]) -> None:
@@ -112,19 +115,7 @@ class LanceDBStore(VectorStore):
         if not chunks:
             return
         db = self._connect()
-        rows = [
-            {
-                "id": c.id,
-                "text": c.text,
-                "source_id": c.source_id,
-                "source_title": c.source_title,
-                "section": c.section,
-                "vector": c.vector,
-                "url": c.url,
-                "citation_count": c.citation_count,
-            }
-            for c in chunks
-        ]
+        rows = _rows(chunks)
         if self._table_name in db.list_tables().tables:
             table = self._ensure_table()
             table.add(rows)
