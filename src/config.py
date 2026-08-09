@@ -161,4 +161,10 @@ GITHUB_MCP_ENABLED = False
 # LANGSMITH_API_KEY actually being set (see providers/tracing.py), same
 # pattern as GITHUB_MCP_ENABLED/token.
 LANGSMITH_TRACING_ENABLED = False
+
+# scripts/eval_correctness.py — explicit opt-in eval run, independent of
+# LANGSMITH_TRACING_ENABLED above (that flag gates passive production
+# tracing; this script's whole point is uploading a golden-set experiment
+# to LangSmith, so it only needs LANGSMITH_API_KEY, not the tracing flag).
+LANGSMITH_EVAL_DATASET = "local-research-agent-correctness"
 LANGSMITH_PROJECT = "local-research-agent"

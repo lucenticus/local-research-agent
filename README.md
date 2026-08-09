@@ -440,6 +440,7 @@ python -m src.cli index
 python -m scripts.eval_retrieval      # dense vs hybrid retrieval@k
 python -m scripts.eval_rerank         # hybrid vs hybrid+rerank hit@1
 python -m scripts.eval_faithfulness   # citation coverage + faithfulness
+python -m scripts.eval_correctness    # LLM-judge correctness (needs LANGSMITH_API_KEY, uploads to LangSmith)
 ```
 
 ## Known assumptions (`ARCH-Q`)
