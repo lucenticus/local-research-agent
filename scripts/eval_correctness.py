@@ -30,15 +30,12 @@ tracing — this script's entire point is an explicit LangSmith upload).
 
 from __future__ import annotations
 
-import os
-from typing import Any
-
 from src import config
 from src.agent.synthesize import synthesize
 from src.providers import embed, llm, rerank
 from src.store.lancedb_store import LanceDBStore
 
-from .eval_data import EVAL_CASES
+from .eval_data import ensure_dataset, require_langsmith_api_key
 
 _JUDGE_SYSTEM_PROMPT = (
     "Ты — строгий эксперт-проверяющий. Тебе дан вопрос, эталонный ответ и "
@@ -67,46 +64,16 @@ def _answer(store: LanceDBStore, question: str) -> str:
     return synthesize(question, hits)
 
 
-def _ensure_dataset(client: Any) -> str:
-    """Создаёт датасет, если его ещё нет, и докидывает в него любые кейсы из
-    `eval_data.EVAL_CASES`, которых там ещё нет (сравнение по тексту
-    вопроса) — так расширение golden-set (`eval_data.py`) само подхватывается
-    без ручной синхронизации с уже существующим датасетом в LangSmith."""
-    dataset_name = config.LANGSMITH_EVAL_DATASET
-    if not client.has_dataset(dataset_name=dataset_name):
-        client.create_dataset(
-            dataset_name,
-            description="local-research-agent: golden Q&A correctness eval over corpus/",
-        )
-        existing_questions: set[str] = set()
-    else:
-        existing_questions = {
-            example.inputs["question"] for example in client.list_examples(dataset_name=dataset_name)
-        }
-
-    new_cases = [c for c in EVAL_CASES if c.question not in existing_questions]
-    if new_cases:
-        client.create_examples(
-            dataset_name=dataset_name,
-            examples=[
-                {"inputs": {"question": c.question}, "outputs": {"reference_answer": c.reference_answer}}
-                for c in new_cases
-            ],
-        )
-    return dataset_name
-
-
 def main() -> None:
-    if not os.environ.get("LANGSMITH_API_KEY"):
-        raise SystemExit(
-            "LANGSMITH_API_KEY не задан в .env — нужен для загрузки датасета "
-            "и результатов эксперимента в LangSmith (см. README 'Tracing: LangSmith')."
-        )
+    require_langsmith_api_key()
 
     from langsmith import Client, evaluate
 
     client = Client()
-    dataset_name = _ensure_dataset(client)
+    dataset_name = ensure_dataset(
+        client, config.LANGSMITH_EVAL_DATASET,
+        description="local-research-agent: golden Q&A eval over corpus/ (correctness + RAGAS context quality)",
+    )
     store = LanceDBStore()
 
     def target(inputs: dict) -> dict:

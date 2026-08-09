@@ -431,10 +431,14 @@ uv run pytest -q
 Unit tests are offline and fast — embeddings and the LLM are mocked, no
 real model load needed to run the suite.
 
-All eval scripts share one golden set (`scripts/eval_data.py`, 14 cases —
+All eval scripts share one golden set (`scripts/eval_data.py`, 18 cases —
 question + expected `corpus/` doc + hand-written reference answer) instead
-of duplicating question text per script. `corpus/` has 7 docs (4 original +
-3 added for eval coverage: chunking, reranking, citation faithfulness).
+of duplicating question text per script. `corpus/` has 9 docs (4 original +
+5 added for eval coverage: chunking, reranking, citation faithfulness,
+embedding models, query rewriting — the last two deliberately overlap in
+topic with existing docs, e.g. embeddings vs. vector databases vs.
+rerankers, so retrieval has real disambiguation to do instead of one
+obviously-correct document per question).
 
 A few scripts run against real models (not part of `pytest`, since
 measuring retrieval/rerank/faithfulness quality without real models would
@@ -446,8 +450,13 @@ python -m scripts.eval_retrieval      # dense vs hybrid recall@k + MRR
 python -m scripts.eval_rerank         # hybrid vs hybrid+rerank hit@1
 python -m scripts.eval_faithfulness   # citation coverage + faithfulness
 python -m scripts.eval_correctness    # LLM-judge correctness (needs LANGSMITH_API_KEY, uploads to LangSmith)
-python -m scripts.eval_ragas          # RAGAS context precision/recall (judge: resident ChatMLX, no external API)
+python -m scripts.eval_ragas          # RAGAS context precision/recall (judge: resident ChatMLX, needs LANGSMITH_API_KEY, no external LLM API)
 ```
+
+`eval_correctness.py` and `eval_ragas.py` upload to the same LangSmith
+dataset (`config.LANGSMITH_EVAL_DATASET`) as two separate experiments —
+compare them side by side in the LangSmith UI rather than reading two
+separate console tables.
 
 ## Known assumptions (`ARCH-Q`)
 

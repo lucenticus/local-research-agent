@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -153,4 +155,86 @@ EVAL_CASES: list[EvalCase] = [
             "faithfulness низким."
         ),
     ),
+    # embedding_models.md и query_rewriting.md добавлены намеренно с
+    # пересечением тем с уже существующими документами (vector_databases.md,
+    # reranking_models.md, hybrid_retrieval_paper.md) — предыдущий корпус был
+    # тематически слишком хорошо разделён, recall@k/MRR были насыщены 1.0
+    # на любом вопросе. Побочный эффект: вопрос про реранкер-vs-эмбеддинги
+    # выше теперь тоже конкурирует с embedding_models.md — это честный
+    # сигнал, а не баг датасета.
+    EvalCase(
+        question="Чем модель эмбеддингов отличается от векторной базы данных?",
+        expected_source_id="embedding_models.md",
+        reference_answer=(
+            "Модель эмбеддингов превращает текст в вектор — она отвечает за сам "
+            "процесс кодирования смысла в числа. Векторная база данных только "
+            "хранит уже готовые векторы и ищет среди них ближайшие, ничего не "
+            "зная о смысле текста."
+        ),
+    ),
+    EvalCase(
+        question="Как обучают многоязычные модели эмбеддингов вроде bge-m3?",
+        expected_source_id="embedding_models.md",
+        reference_answer=(
+            "Через self-knowledge distillation — модель дообучается предсказывать "
+            "те же relevance-скоры, которые сама выдавала на предыдущем шаге "
+            "обучения, что позволяет стабильно совмещать dense- и "
+            "sparse-представления в одной модели."
+        ),
+    ),
+    EvalCase(
+        question="Зачем переформулировать запрос перед retrieval и когда это нужно?",
+        expected_source_id="query_rewriting.md",
+        reference_answer=(
+            "Переформулирование запроса помогает, когда запрос плохо ложится на "
+            "индекс как есть — например, корпус на одном языке, а запрос на "
+            "другом, или запрос — это длинное предложение, а не ключевые слова. "
+            "Модель переводит или сжимает запрос до ключевых слов перед поиском."
+        ),
+    ),
+    EvalCase(
+        question="Чем переформулирование запроса отличается от реранкинга по месту в пайплайне?",
+        expected_source_id="query_rewriting.md",
+        reference_answer=(
+            "Переформулирование запроса происходит ДО retrieval — меняет то, что "
+            "именно ищем. Реранкинг происходит ПОСЛЕ retrieval — переупорядочивает "
+            "уже найденные результаты. Первое решает проблему 'что ищем', второе — "
+            "'как упорядочить найденное'."
+        ),
+    ),
 ]
+
+
+def require_langsmith_api_key() -> None:
+    if not os.environ.get("LANGSMITH_API_KEY"):
+        raise SystemExit(
+            "LANGSMITH_API_KEY не задан в .env — нужен для загрузки датасета "
+            "и результатов эксперимента в LangSmith (см. README 'Tracing: LangSmith')."
+        )
+
+
+def ensure_dataset(client: Any, dataset_name: str, *, description: str) -> str:
+    """Создаёт датасет, если его ещё нет, и докидывает в него любые кейсы из
+    `EVAL_CASES`, которых там ещё нет (сравнение по тексту вопроса) — так
+    расширение golden-set само подхватывается без ручной синхронизации с уже
+    существующим датасетом в LangSmith. Общий helper для eval_correctness.py
+    и eval_ragas.py — оба используют один и тот же датасет
+    (`config.LANGSMITH_EVAL_DATASET`), но с разными экспериментами/target."""
+    if not client.has_dataset(dataset_name=dataset_name):
+        client.create_dataset(dataset_name, description=description)
+        existing_questions: set[str] = set()
+    else:
+        existing_questions = {
+            example.inputs["question"] for example in client.list_examples(dataset_name=dataset_name)
+        }
+
+    new_cases = [c for c in EVAL_CASES if c.question not in existing_questions]
+    if new_cases:
+        client.create_examples(
+            dataset_name=dataset_name,
+            examples=[
+                {"inputs": {"question": c.question}, "outputs": {"reference_answer": c.reference_answer}}
+                for c in new_cases
+            ],
+        )
+    return dataset_name
