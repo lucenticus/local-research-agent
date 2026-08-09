@@ -15,16 +15,12 @@ SearXNG — `sources/web.py`, см. его docstring: DuckDuckGo/Brave там
 
 from __future__ import annotations
 
-import json
 import os
-import urllib.error
-import urllib.request
 
-from ._common import is_article_url
+from ._common import fetch_json, is_article_url
 from .base import DiscoveredItem
 
 _API_URL = "https://api.tavily.com/search"
-_TIMEOUT_SECONDS = 15
 
 
 class TavilySource:
@@ -36,18 +32,10 @@ class TavilySource:
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
         if not self._api_key:
             return []
-        payload = json.dumps(
-            {"api_key": self._api_key, "query": query, "max_results": limit}
-        ).encode("utf-8")
-        request = urllib.request.Request(
-            _API_URL,
-            data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "local-research-agent/0.1"},
+        body = fetch_json(
+            _API_URL, json_body={"api_key": self._api_key, "query": query, "max_results": limit}
         )
-        try:
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-                body = json.loads(response.read())
-        except (urllib.error.URLError, TimeoutError, OSError):
+        if body is None:
             return []
         return list(self._parse(body))
 

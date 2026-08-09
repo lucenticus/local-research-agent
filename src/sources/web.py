@@ -26,16 +26,9 @@
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.parse
-import urllib.request
-
 from .. import config
-from ._common import is_article_url
+from ._common import fetch_json, is_article_url
 from .base import DiscoveredItem
-
-_TIMEOUT_SECONDS = 15
 
 
 class WebSource:
@@ -45,15 +38,8 @@ class WebSource:
         self._base_url = base_url or config.SEARXNG_BASE_URL
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
-        params = urllib.parse.urlencode({"q": query, "format": "json"})
-        request = urllib.request.Request(
-            f"{self._base_url}/search?{params}",
-            headers={"User-Agent": "local-research-agent/0.1"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-                body = json.loads(response.read())
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        body = fetch_json(f"{self._base_url}/search", {"q": query, "format": "json"})
+        if body is None:
             return []  # локальный SearXNG не поднят - источник просто пуст
         return list(self._parse(body))[:limit]
 

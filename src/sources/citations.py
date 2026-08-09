@@ -15,11 +15,9 @@ Semantic Scholar уже отдаёт `citationCount` прямо при discovery
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.parse
-import urllib.request
 from difflib import SequenceMatcher
+
+from ._common import fetch_json
 
 _API_URL = "https://api.openalex.org/works"
 _TIMEOUT_SECONDS = 10
@@ -34,14 +32,8 @@ def lookup_citation_count(title: str) -> int | None:
     title = title.strip()
     if not title:
         return None
-    params = urllib.parse.urlencode({"filter": f"title.search:{title}", "per_page": 1})
-    request = urllib.request.Request(
-        f"{_API_URL}?{params}", headers={"User-Agent": "local-research-agent/0.1"}
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+    body = fetch_json(_API_URL, {"filter": f"title.search:{title}", "per_page": 1}, timeout=_TIMEOUT_SECONDS)
+    if body is None:
         return None
     results = body.get("results") or []
     if not results:

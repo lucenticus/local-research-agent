@@ -17,22 +17,18 @@ Scholar/web, приходит и сюда.
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.parse
-import urllib.request
-
+from ._common import fetch_json
 from .base import DiscoveredItem
 
 _API_URL = "https://en.wikipedia.org/w/api.php"
-_TIMEOUT_SECONDS = 15
 
 
 class WikipediaSource:
     name = "wikipedia"
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
-        params = urllib.parse.urlencode(
+        body = fetch_json(
+            _API_URL,
             {
                 "action": "query",
                 "generator": "search",
@@ -43,15 +39,9 @@ class WikipediaSource:
                 "explaintext": 1,
                 "inprop": "url",
                 "format": "json",
-            }
+            },
         )
-        request = urllib.request.Request(
-            f"{_API_URL}?{params}", headers={"User-Agent": "local-research-agent/0.1"}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-                body = json.loads(response.read())
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        if body is None:
             return []
         return list(self._parse(body))
 
