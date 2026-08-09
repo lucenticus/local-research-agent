@@ -33,9 +33,14 @@ from pydantic import BaseModel
 from .. import config
 from ..agent.research_runner import ResearchResult, run_followup, run_research
 from ..agent.state import ResearchState
+from ..providers import tracing
 from ..store.lancedb_store import LanceDBStore
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# `cli.py serve` already calls this before `uvicorn.run` imports this module
+# in-process — repeated here too so `uvicorn src.web.app:app` works standalone.
+tracing.enable_if_configured()
 
 app = FastAPI(title="local-research-agent")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")

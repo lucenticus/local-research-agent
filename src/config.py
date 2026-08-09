@@ -152,3 +152,13 @@ MCP_FETCH_MAX_CHARS = 8000
 # clients. Also gated on the token actually being set - see
 # sources/github_mcp.py.
 GITHUB_MCP_ENABLED = False
+
+# --- LangSmith tracing (providers/tracing.py) ---
+
+# Off by default: unlike the flags above, this isn't about latency/deps —
+# it's "don't ship every question + retrieved chunk + synthesized answer to
+# a third-party cloud service without an explicit opt-in". Also gated on
+# LANGSMITH_API_KEY actually being set (see providers/tracing.py), same
+# pattern as GITHUB_MCP_ENABLED/token.
+LANGSMITH_TRACING_ENABLED = False
+LANGSMITH_PROJECT = "local-research-agent"

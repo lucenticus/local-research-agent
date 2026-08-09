@@ -11,7 +11,7 @@ from .agent.research_runner import ResearchResult, retrieve, run_followup, run_r
 from .agent.synthesize import synthesize
 from .ingest.chunk import chunk_sections
 from .ingest.extract import Section, extract_html_sections, extract_pdf_sections, extract_sections
-from .providers import embed
+from .providers import embed, tracing
 from .providers.mcp_client import content_to_text, get_mcp_tools
 from .store.lancedb_store import Chunk, LanceDBStore
 
@@ -246,6 +246,7 @@ def cmd_mcp_serve(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    tracing.enable_if_configured()
     parser = argparse.ArgumentParser(prog="research-agent")
     sub = parser.add_subparsers(dest="command", required=True)
 

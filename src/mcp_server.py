@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from . import config
 from .agent.research_runner import SourceRef, retrieve, run_research, unique_sources
 from .agent.synthesize import synthesize
+from .providers import tracing
 from .store.lancedb_store import LanceDBStore
 
 mcp = FastMCP("local-research-agent")
@@ -61,4 +62,5 @@ def research(question: str) -> str:
 
 
 def serve() -> None:
+    tracing.enable_if_configured()
     mcp.run(transport="stdio")

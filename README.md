@@ -396,6 +396,32 @@ single local user. Only one job runs at a time (loading multiple heavy
 models concurrently isn't safe on 16GB) — a second request while one is
 running gets `409`, not a silent queue.
 
+## Tracing: LangSmith
+
+Off by default (`config.LANGSMITH_TRACING_ENABLED = False`) — not a
+latency/dependency concern like the MCP flags above, but "don't ship
+question text + retrieved chunks + synthesized answers to a third-party
+cloud service without an explicit opt-in".
+
+To enable: get a key at [smith.langchain.com](https://smith.langchain.com),
+add `LANGSMITH_API_KEY=...` to `.env`, and set
+`config.LANGSMITH_TRACING_ENABLED = True`. `providers/tracing.py` then sets
+the env vars LangChain/LangSmith read (`LANGSMITH_TRACING`,
+`LANGSMITH_PROJECT`) once at process start (`cli.py`, `web/app.py`,
+`mcp_server.py`) — nothing else in the codebase talks to LangSmith
+directly.
+
+Because this project already routes almost everything through
+LangChain/LangGraph (see the Stack section in `CLAUDE.md`: `ChatMLX`, the
+LCEL synthesis chain, `LanceDBStore` as a `VectorStore`, each `Source`
+wrapped as a `StructuredTool`, MCP tools, and the `agent/loop.py` research
+graph itself), turning tracing on instruments the whole pipeline at once —
+no per-component wiring needed. In the LangSmith UI, one `research()` call
+shows up as a single trace tree: the LangGraph nodes (`plan` → `run_pass` →
+`check_faithfulness` → `finalize`), every source's discovery tool call
+nested under `run_pass`, the retrieval calls, and the final synthesis LLM
+call, each with inputs/outputs/latency.
+
 ## Tests and eval scripts
 
 ```bash

@@ -4,6 +4,7 @@ langgraph>=1.2
 langchain-core>=1.5
 langchain-mcp-adapters>=0.3
 mcp>=1.29
+langsmith>=0.10
 lancedb>=0.15
 pyarrow
 numpy

@@ -76,6 +76,12 @@ fetch server as a deep-read fallback (`funnel.py`, off by default —
 and `mcp_server.py` exposing this agent's own `ask`/`research` as MCP tools
 over stdio (`mcp-serve`). See README's "MCP: tools this agent uses, and using this agent as a tool" section.
 
+Tracing: `providers/tracing.py` sets the LangSmith env vars at process start
+(off by default — `config.LANGSMITH_TRACING_ENABLED` + `LANGSMITH_API_KEY`).
+No other code talks to LangSmith — it instruments every LangChain/LangGraph
+component above automatically via LangChain's callback system. See README's
+"Tracing: LangSmith" section.
+
 ## Running it
 ```
 python -m src.cli index          # build the index from corpus/
