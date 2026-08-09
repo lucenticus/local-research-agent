@@ -431,16 +431,22 @@ uv run pytest -q
 Unit tests are offline and fast — embeddings and the LLM are mocked, no
 real model load needed to run the suite.
 
+All eval scripts share one golden set (`scripts/eval_data.py`, 14 cases —
+question + expected `corpus/` doc + hand-written reference answer) instead
+of duplicating question text per script. `corpus/` has 7 docs (4 original +
+3 added for eval coverage: chunking, reranking, citation faithfulness).
+
 A few scripts run against real models (not part of `pytest`, since
 measuring retrieval/rerank/faithfulness quality without real models would
 be meaningless):
 
 ```bash
 python -m src.cli index
-python -m scripts.eval_retrieval      # dense vs hybrid retrieval@k
+python -m scripts.eval_retrieval      # dense vs hybrid recall@k + MRR
 python -m scripts.eval_rerank         # hybrid vs hybrid+rerank hit@1
 python -m scripts.eval_faithfulness   # citation coverage + faithfulness
 python -m scripts.eval_correctness    # LLM-judge correctness (needs LANGSMITH_API_KEY, uploads to LangSmith)
+python -m scripts.eval_ragas          # RAGAS context precision/recall (judge: resident ChatMLX, no external API)
 ```
 
 ## Known assumptions (`ARCH-Q`)

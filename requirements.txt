@@ -5,6 +5,12 @@ langchain-core>=1.5
 langchain-mcp-adapters>=0.3
 mcp>=1.29
 langsmith>=0.10
+# scripts/eval_ragas.py's context precision/recall metrics — pin langchain-
+# community <0.4: ragas 0.4.x's ragas/llms/base.py unconditionally imports
+# langchain_community.chat_models.vertexai at module load, removed upstream
+# in langchain-community 0.4 (confirmed: `import ragas` crashes otherwise).
+ragas>=0.4.3,<0.5
+langchain-community==0.3.30
 lancedb>=0.15
 pyarrow
 numpy
