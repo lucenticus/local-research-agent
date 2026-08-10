@@ -104,6 +104,7 @@ class DigestRequest(BaseModel):
     categories: list[str] | None = None
     limit: int | None = None
     summarize: bool | None = None
+    query: str | None = None
 
 
 def _job_to_dict(job: Job) -> dict[str, Any]:
@@ -152,6 +153,7 @@ def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
         else {
             "days": job.result.days,
             "categories": job.result.categories,
+            "query": job.result.query,
             "summary": job.result.summary,
             "items": [
                 {
@@ -169,7 +171,7 @@ def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
 
 
 def _run_digest_job(job: DigestJob, days: int | None, categories: list[str] | None,
-                     limit: int | None, summarize: bool | None) -> None:
+                     limit: int | None, summarize: bool | None, query: str | None) -> None:
     global _current_job_id
     try:
         def on_progress(message: str) -> None:
@@ -177,7 +179,7 @@ def _run_digest_job(job: DigestJob, days: int | None, categories: list[str] | No
                 job.progress.append(message)
 
         result = run_digest(days=days, categories=categories, limit=limit,
-                             summarize=summarize, on_progress=on_progress)
+                             summarize=summarize, query=query, on_progress=on_progress)
         with _jobs_lock:
             job.result = result
             job.status = "done"
@@ -305,7 +307,7 @@ def create_digest(payload: DigestRequest) -> dict[str, Any]:
 
     threading.Thread(
         target=_run_digest_job,
-        args=(job, payload.days, payload.categories, payload.limit, payload.summarize),
+        args=(job, payload.days, payload.categories, payload.limit, payload.summarize, payload.query),
         daemon=True,
     ).start()
     return {"job_id": job.id}

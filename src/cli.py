@@ -245,10 +245,11 @@ def cmd_digest(args: argparse.Namespace) -> None:
 
     result = run_digest(
         days=args.days, categories=args.categories or None, limit=args.limit,
-        summarize=not args.no_summary,
+        summarize=not args.no_summary, query=args.query,
     )
+    scope = f" по «{result.query}»" if result.query else ""
     print(
-        f"Дайджест: {len(result.items)} статей за последние {result.days} дн. "
+        f"Дайджест{scope}: {len(result.items)} статей за последние {result.days} дн. "
         f"в категориях {', '.join(result.categories)}\n"
     )
     if result.summary:
@@ -315,6 +316,10 @@ def main() -> None:
         help=f"arXiv-категория, можно несколько раз (по умолчанию {config.ARXIV_AI_CATEGORIES})",
     )
     p_digest.add_argument("--limit", type=int, default=None, help=f"По умолчанию {config.DIGEST_DEFAULT_LIMIT}")
+    p_digest.add_argument(
+        "--query", default=None,
+        help="Ограничить дайджест конкретной темой (свежее по теме, а не вообще всё)",
+    )
     p_digest.add_argument("--no-summary", action="store_true", help="Не генерировать LLM-обзор тем")
     p_digest.set_defaults(func=cmd_digest)
 

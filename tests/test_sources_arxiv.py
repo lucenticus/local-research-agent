@@ -159,3 +159,32 @@ def test_recent_filters_out_items_older_than_days(monkeypatch):
     items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
     assert len(items) == 1
     assert items[0].title == "Paper 0"
+
+
+def test_recent_with_query_ands_keyword_but_still_sorts_by_date(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _FakeResponse(_atom_with_published(datetime.now(timezone.utc).isoformat()))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10, query="diffusion models")
+    url = captured["url"]
+    assert "sortBy=submittedDate" in url
+    assert "cat%3Acs.AI" in url
+    assert "all%3Adiffusion+AND+all%3Amodels" in url
+
+
+def test_recent_without_query_omits_keyword_clause(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _FakeResponse(_atom_with_published(datetime.now(timezone.utc).isoformat()))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10, query="   ")
+    assert "all%3A" not in captured["url"]

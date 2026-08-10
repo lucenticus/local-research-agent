@@ -19,7 +19,11 @@ https://arxiv.org/category_taxonomy — `config.ARXIV_AI_CATEGORIES` держи�
 
 `recent()` — отдельный от `discover()` метод для дайджест-режима
 (`agent/digest.py`): browse "что нового в категории", а не поиск по
-конкретному запросу — сортировка по дате, без keyword-фильтра вовсе.
+конкретному запросу — сортировка по дате. Опциональный `query` (§
+пользовательский запрос: дайджест должен уметь искать по конкретной теме)
+AND'ится в тот же search_query, что и категории, но сортировка всё равно
+по дате, не по релевантности — дайджест с запросом это "что нового по теме
+X", а не "самое релевантное X", для второго уже есть `discover()`/`research`.
 """
 
 from __future__ import annotations
@@ -43,30 +47,28 @@ class ArxivSource:
         self._categories = categories
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
-        # AND по словам, не точная фраза — вопросы на естественном языке почти
-        # никогда не совпадают с заголовком/абстрактом статьи дословно.
-        words = query.split()
-        keyword_query = " AND ".join(f"all:{w}" for w in words) if words else f"all:{query}"
-        if self._categories:
-            category_clause = " OR ".join(f"cat:{c}" for c in self._categories)
-            search_query = f"({category_clause}) AND ({keyword_query})"
-        else:
-            search_query = keyword_query
+        keyword_query = _keyword_query(query)
+        category_clause = self._category_clause()
+        search_query = f"({category_clause}) AND ({keyword_query})" if category_clause else keyword_query
         return self._query(search_query, limit=limit, sort_by="relevance")
 
-    def recent(self, days: int, limit: int) -> list[DiscoveredItem]:
+    def recent(self, days: int, limit: int, query: str | None = None) -> list[DiscoveredItem]:
         """Последние публикации в `self._categories`, отсортированные по дате
-        (не по релевантности — здесь нет запроса, который можно было бы с
-        чем-то сравнивать). Отфильтровано клиентской стороной по `days` —
-        проще и надёжнее, чем городить `submittedDate:[...]` range-синтаксис
-        arXiv-запроса, а `max_results` и так достаточно мал, чтобы не тянуть
-        лишнего."""
-        if not self._categories:
+        (не по релевантности) — опционально ограниченные `query` (свежее по
+        конкретной теме, а не вообще всё). Отфильтровано клиентской стороной
+        по `days` — проще и надёжнее, чем городить `submittedDate:[...]`
+        range-синтаксис arXiv-запроса, а `max_results` и так достаточно мал,
+        чтобы не тянуть лишнего."""
+        category_clause = self._category_clause()
+        if not category_clause:
             raise ValueError("recent() needs categories - browsing all of arXiv unfiltered isn't useful")
-        category_clause = " OR ".join(f"cat:{c}" for c in self._categories)
-        items = self._query(category_clause, limit=limit, sort_by="submittedDate")
+        search_query = f"({category_clause}) AND ({_keyword_query(query)})" if query and query.strip() else category_clause
+        items = self._query(search_query, limit=limit, sort_by="submittedDate")
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         return [item for item in items if _published_after(item, cutoff)]
+
+    def _category_clause(self) -> str:
+        return " OR ".join(f"cat:{c}" for c in self._categories) if self._categories else ""
 
     def _query(self, search_query: str, *, limit: int, sort_by: str) -> list[DiscoveredItem]:
         params = urllib.parse.urlencode(
@@ -116,6 +118,13 @@ class ArxivSource:
                 published_date=published or None,
                 meta={"pdf_url": f"https://arxiv.org/pdf/{arxiv_id}", "authors": authors, "categories": categories},
             )
+
+
+def _keyword_query(query: str) -> str:
+    # AND по словам, не точная фраза — вопросы на естественном языке почти
+    # никогда не совпадают с заголовком/абстрактом статьи дословно.
+    words = query.split()
+    return " AND ".join(f"all:{w}" for w in words) if words else f"all:{query}"
 
 
 def _published_after(item: DiscoveredItem, cutoff: datetime) -> bool:

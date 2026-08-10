@@ -245,6 +245,17 @@
     background: var(--panel);
     color: var(--text);
   }
+  .digest-query-input {
+    flex: 1 1 100%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+  }
+  .digest-query-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .category-list {
     display: flex;
     flex-wrap: wrap;
@@ -318,6 +329,8 @@
 
   <div id="digest-section" class="hidden">
     <form id="digest-form">
+      <input type="text" id="digest-query" class="digest-query-input"
+             placeholder="Тема (необязательно) — например, diffusion models">
       <label>За последние <input type="number" id="digest-days" value="7" min="1" max="90"> дн.</label>
       <label>Показать <input type="number" id="digest-limit" value="20" min="1" max="100"> статей</label>
       <label><input type="checkbox" id="digest-no-summary"> без обзора тем</label>
@@ -659,6 +672,7 @@ ARXIV_AI_CATEGORIES.forEach((cat) => {
 
 const digestForm = document.getElementById("digest-form");
 const digestSubmitBtn = document.getElementById("digest-submit");
+const digestQueryEl = document.getElementById("digest-query");
 const digestDaysEl = document.getElementById("digest-days");
 const digestLimitEl = document.getElementById("digest-limit");
 const digestNoSummaryEl = document.getElementById("digest-no-summary");
@@ -702,8 +716,9 @@ function renderDigestError(message) {
 
 function renderDigestResult(result) {
   digestErrorPanel.classList.add("hidden");
+  const queryPart = result.query ? `по «${result.query}» ` : "";
   digestHeading.textContent =
-    `${result.items.length} статей за последние ${result.days} дн. в категориях ${result.categories.join(", ")}`;
+    `${result.items.length} статей ${queryPart}за последние ${result.days} дн. в категориях ${result.categories.join(", ")}`;
 
   if (result.summary) {
     digestSummaryEl.textContent = result.summary;
@@ -794,6 +809,7 @@ digestForm.addEventListener("submit", async (e) => {
     limit: Number(digestLimitEl.value) || null,
     categories: checked.length > 0 ? checked : null,
     summarize: !digestNoSummaryEl.checked,
+    query: digestQueryEl.value.trim() || null,
   };
 
   let resp;

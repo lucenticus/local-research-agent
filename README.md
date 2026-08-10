@@ -299,9 +299,10 @@ question because there isn't one. Available both as a CLI command and as
 the "Дайджест: свежие статьи" tab in the web UI (see below).
 
 ```bash
-python -m src.cli digest                              # last 7 days, default categories
-python -m src.cli digest --days 3 --category cs.CL     # narrower window/category
-python -m src.cli digest --limit 30 --no-summary        # more items, skip the LLM overview
+python -m src.cli digest                                   # last 7 days, default categories
+python -m src.cli digest --days 3 --category cs.CL          # narrower window/category
+python -m src.cli digest --limit 30 --no-summary             # more items, skip the LLM overview
+python -m src.cli digest --query "diffusion models"          # only recent papers matching a topic
 ```
 
 Deliberately not built on `agent/funnel.py`/`agent/loop.py` — those exist
@@ -309,8 +310,11 @@ to answer a specific subquestion (discover → triage-by-relevance → deep
 read); a digest has no question to be relevant *to*, so running it through
 the funnel would mean inventing a fake query and then discarding freshness
 information the funnel doesn't track. `sources/arxiv.py::ArxivSource.recent()`
-is a separate, simpler path: `sortBy=submittedDate`, category filter only,
-no keyword query, filtered client-side to the requested day window.
+is a separate, simpler path: `sortBy=submittedDate`, category filter, and an
+*optional* `query` — when given, AND'd into the same search_query as the
+categories, same keyword-tokenization as `discover()`, but still sorted by
+date, not relevance: `digest --query X` means "what's new about X", not
+"what's most relevant to X" (that's what `research`/`ask` are for).
 
 Output is a plain list (title, authors, date, link — no deep read, no
 indexing into Qdrant) plus an optional short LLM-written overview of themes
@@ -446,8 +450,9 @@ running gets `409`, not a silent queue.
 
 Two tabs: **Исследование** (`research`/`ask`, described above) and
 **Дайджест: свежие статьи** — the `digest` CLI command's browse mode, with
-day-window/limit/category controls and a "без обзора тем" checkbox to skip
-the LLM summary. Same job+polling pattern (`POST /api/digest`,
+a topic field (optional — same `--query` as the CLI), day-window/limit/
+category controls, and a "без обзора тем" checkbox to skip the LLM summary.
+Same job+polling pattern (`POST /api/digest`,
 `GET /api/digest/{id}`), a separate `DigestJob`/`_digest_jobs` pair (no
 session/follow-up concept for a digest), but sharing the same
 `_current_job_id` concurrency slot as research jobs — digest also calls the

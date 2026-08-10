@@ -33,6 +33,7 @@ class DigestResult:
     items: list[DiscoveredItem]
     days: int
     categories: list[str]
+    query: str | None = None
     summary: str | None = None
 
 
@@ -56,18 +57,21 @@ def run_digest(
     categories: list[str] | None = None,
     limit: int | None = None,
     summarize: bool | None = None,
+    query: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> DigestResult:
     days = config.DIGEST_DEFAULT_DAYS if days is None else days
     categories = categories or config.ARXIV_AI_CATEGORIES
     limit = config.DIGEST_DEFAULT_LIMIT if limit is None else limit
     summarize = config.DIGEST_SUMMARIZE if summarize is None else summarize
+    query = query.strip() if query and query.strip() else None
 
-    _emit(on_progress, f"Ищем статьи за последние {days} дн. в {', '.join(categories)}…")
-    items = ArxivSource(categories=categories).recent(days=days, limit=limit)
+    scope = f"по «{query}» " if query else ""
+    _emit(on_progress, f"Ищем статьи {scope}за последние {days} дн. в {', '.join(categories)}…")
+    items = ArxivSource(categories=categories).recent(days=days, limit=limit, query=query)
     _emit(on_progress, f"Найдено {len(items)}.")
     summary = None
     if summarize and items:
         _emit(on_progress, "Собираем обзор тем…")
         summary = _summarize(items)
-    return DigestResult(items=items, days=days, categories=categories, summary=summary)
+    return DigestResult(items=items, days=days, categories=categories, query=query, summary=summary)

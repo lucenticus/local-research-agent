@@ -14,7 +14,7 @@ def _item(i: int) -> DiscoveredItem:
 def test_run_digest_uses_defaults_when_not_specified(monkeypatch):
     captured = {}
 
-    def fake_recent(self, days, limit):
+    def fake_recent(self, days, limit, query=None):
         captured["days"] = days
         captured["limit"] = limit
         captured["categories"] = self._categories
@@ -34,7 +34,7 @@ def test_run_digest_uses_defaults_when_not_specified(monkeypatch):
 def test_run_digest_respects_explicit_overrides(monkeypatch):
     captured = {}
 
-    def fake_recent(self, days, limit):
+    def fake_recent(self, days, limit, query=None):
         captured["days"] = days
         captured["limit"] = limit
         captured["categories"] = self._categories
@@ -49,7 +49,7 @@ def test_run_digest_respects_explicit_overrides(monkeypatch):
 
 
 def test_run_digest_skips_summary_when_disabled(monkeypatch):
-    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit: [_item(1)])
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: [_item(1)])
 
     def _fail(items):
         raise AssertionError("summarize must not be called when summarize=False")
@@ -61,7 +61,7 @@ def test_run_digest_skips_summary_when_disabled(monkeypatch):
 
 
 def test_run_digest_skips_summary_when_no_items(monkeypatch):
-    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit: [])
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: [])
 
     def _fail(items):
         raise AssertionError("summarize must not be called on an empty digest")
@@ -74,7 +74,7 @@ def test_run_digest_skips_summary_when_no_items(monkeypatch):
 
 
 def test_run_digest_reports_progress(monkeypatch):
-    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit: [_item(1)])
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: [_item(1)])
     monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
     messages = []
 
@@ -82,6 +82,37 @@ def test_run_digest_reports_progress(monkeypatch):
     assert any("Ищем статьи" in m for m in messages)
     assert any("Найдено 1" in m for m in messages)
     assert any("обзор" in m for m in messages)
+
+
+def test_run_digest_passes_query_through_and_mentions_it_in_progress(monkeypatch):
+    captured = {}
+
+    def fake_recent(self, days, limit, query=None):
+        captured["query"] = query
+        return [_item(1)]
+
+    monkeypatch.setattr(ArxivSource, "recent", fake_recent)
+    monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
+    messages = []
+
+    result = digest.run_digest(query="  diffusion models  ", on_progress=messages.append)
+    assert captured["query"] == "diffusion models"  # обрезано
+    assert result.query == "diffusion models"
+    assert any("«diffusion models»" in m for m in messages)
+
+
+def test_run_digest_blank_query_becomes_none(monkeypatch):
+    captured = {}
+
+    def fake_recent(self, days, limit, query=None):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(ArxivSource, "recent", fake_recent)
+
+    result = digest.run_digest(query="   ")
+    assert captured["query"] is None
+    assert result.query is None
 
 
 def test_summarize_builds_prompt_from_titles_and_abstracts(monkeypatch):

@@ -225,7 +225,7 @@ def test_get_unknown_digest_returns_404(monkeypatch):
 def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
     _reset_app_state(monkeypatch)
 
-    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, on_progress=None):
+    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, query=None, on_progress=None):
         if on_progress:
             on_progress("Ищем статьи…")
         item = DiscoveredItem(
@@ -233,12 +233,12 @@ def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
             url="https://arxiv.org/abs/1", published_date="2026-08-07T00:00:00Z",
             meta={"authors": ["A. Uthor"]},
         )
-        return DigestResult(items=[item], days=7, categories=["cs.AI"], summary="Overview.")
+        return DigestResult(items=[item], days=7, categories=["cs.AI"], query=query, summary="Overview.")
 
     monkeypatch.setattr(app_module, "run_digest", fake_run_digest)
 
     client = TestClient(app_module.app)
-    create_resp = client.post("/api/digest", json={"days": 7})
+    create_resp = client.post("/api/digest", json={"days": 7, "query": "diffusion"})
     assert create_resp.status_code == 200
     job_id = create_resp.json()["job_id"]
 
@@ -248,6 +248,7 @@ def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
     assert data["result"]["summary"] == "Overview."
     assert data["result"]["days"] == 7
     assert data["result"]["categories"] == ["cs.AI"]
+    assert data["result"]["query"] == "diffusion"
     assert data["result"]["items"] == [
         {
             "title": "Paper", "abstract": "Abstract", "url": "https://arxiv.org/abs/1",
