@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.agent import funnel
 from src.agent.state import Budget, Candidate, ResearchState, SubQuestion
 from src.providers import embed, llm, mcp_client
@@ -196,18 +198,52 @@ def test_run_without_on_progress_does_not_raise():
     funnel.run(sq, [], state, store)  # on_progress не передан - должен просто молчать
 
 
-def test_combined_score_no_citations_equals_cosine():
-    assert funnel._combined_score(0.42, None) == 0.42
-    assert funnel._combined_score(0.42, 0) == 0.42
+def test_combined_score_no_citations_no_date_equals_cosine():
+    assert funnel._combined_score(0.42, None, None) == 0.42
+    assert funnel._combined_score(0.42, 0, None) == 0.42
 
 
 def test_combined_score_boosts_by_log_citations(monkeypatch):
     monkeypatch.setattr(funnel.config, "CITATION_BOOST_SCALE", 0.03)
     import math
 
-    boosted = funnel._combined_score(0.5, 1000)
+    boosted = funnel._combined_score(0.5, 1000, None)
     assert boosted > 0.5
     assert boosted == 0.5 + 0.03 * math.log1p(1000)
+
+
+def test_combined_score_boosts_fresh_published_date(monkeypatch):
+    monkeypatch.setattr(funnel.config, "RECENCY_BOOST_SCALE", 0.05)
+    monkeypatch.setattr(funnel.config, "RECENCY_HALF_LIFE_DAYS", 90)
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    boosted = funnel._combined_score(0.5, None, now)
+    assert boosted == pytest.approx(0.55, abs=1e-4)
+
+
+def test_combined_score_old_published_date_barely_boosts(monkeypatch):
+    monkeypatch.setattr(funnel.config, "RECENCY_BOOST_SCALE", 0.05)
+    monkeypatch.setattr(funnel.config, "RECENCY_HALF_LIFE_DAYS", 90)
+
+    old_score = funnel._combined_score(0.5, None, "2015-01-01T00:00:00Z")
+    assert old_score == pytest.approx(0.5, abs=1e-4)
+
+
+def test_combined_score_invalid_published_date_does_not_raise():
+    assert funnel._combined_score(0.5, None, "not-a-date") == 0.5
+
+
+def test_recency_and_citation_boosts_are_independent(monkeypatch):
+    monkeypatch.setattr(funnel.config, "CITATION_BOOST_SCALE", 0.03)
+    monkeypatch.setattr(funnel.config, "RECENCY_BOOST_SCALE", 0.05)
+    monkeypatch.setattr(funnel.config, "RECENCY_HALF_LIFE_DAYS", 90)
+    import math
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    both = funnel._combined_score(0.5, 1000, now)
+    assert both == pytest.approx(0.5 + 0.03 * math.log1p(1000) + 0.05, abs=1e-4)
 
 
 def test_discover_enriches_arxiv_items_missing_citation_count(monkeypatch):

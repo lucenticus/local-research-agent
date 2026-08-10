@@ -28,6 +28,14 @@ effort). Итоговый score триажа = косинус (семантич�
 популярная, но нерелевантная статья обходила бы точный, но малоцитируемый
 ответ).
 
+Триаж также учитывает свежесть (§ пользовательский запрос: агент должен
+хорошо следить за свежими статьями в области ИИ) — экспоненциально
+затухающий буст по `published_date` (сейчас его отдаёт только `arxiv.py`),
+независимый от цитируемости: свежая статья структурно не может успеть
+набрать цитирований, так что чистый citation-буст систематически топит
+именно то, что нужнее всего для "что нового вышло". См. `_recency_boost` и
+`RECENCY_BOOST_SCALE`/`RECENCY_HALF_LIFE_DAYS` в config.py.
+
 Кросс-источниковый дедуп по arXiv id (найдено реальным прогоном 2026-08-06):
 одна и та же статья находится и через `arxiv.py` (id вида `arxiv:XXXXvN`), и
 через общий веб-поиск (id вида `web:<url>` — например, ссылка на HTML-версию
@@ -45,6 +53,7 @@ import re
 import tempfile
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from .. import config
@@ -115,7 +124,13 @@ def _to_candidate(item: DiscoveredItem) -> Candidate:
         source=item.source,
         title=item.title,
         abstract=item.abstract,
-        meta={**item.meta, "url": item.url, "year": item.year, "citation_count": citation_count},
+        meta={
+            **item.meta,
+            "url": item.url,
+            "year": item.year,
+            "citation_count": citation_count,
+            "published_date": item.published_date,
+        },
     )
 
 
@@ -139,17 +154,37 @@ def _discover(
     return candidates
 
 
-def _combined_score(cosine_similarity: float, citation_count: int | None) -> float:
-    """Семантическая релевантность + небольшой буст по цитируемости.
+def _recency_boost(published_date: str | None) -> float:
+    """Экспоненциально затухающий буст по свежести — 0, если дата неизвестна
+    (не arXiv-источник) или не парсится. См. docstring модуля/config.py."""
+    if not published_date:
+        return 0.0
+    try:
+        published = datetime.fromisoformat(published_date.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    age_days = (datetime.now(timezone.utc) - published).total_seconds() / 86400
+    age_days = max(age_days, 0.0)
+    return config.RECENCY_BOOST_SCALE * math.exp(-age_days / config.RECENCY_HALF_LIFE_DAYS)
 
-    log1p, не сырое число — иначе статья с 10000 цитирований задавила бы
-    любую семантику. `CITATION_BOOST_SCALE` откалиброван так, чтобы буст был
-    тайбрейкером (доли от типичного разброса косинуса), а не доминирующим
-    фактором — см. docstring модуля.
+
+def _combined_score(
+    cosine_similarity: float, citation_count: int | None, published_date: str | None
+) -> float:
+    """Семантическая релевантность + буст по цитируемости + буст по свежести.
+
+    log1p для цитируемости, не сырое число — иначе статья с 10000 цитирований
+    задавила бы любую семантику. Оба буста откалиброваны так, чтобы быть
+    тайбрейкерами (доли от типичного разброса косинуса), а не доминирующим
+    фактором — см. docstring модуля. Независимы друг от друга и суммируются:
+    свежая статья без цитирований и старая цитируемая статья бустятся каждая
+    по своей оси, не конкурируя за один и тот же "бюджет" буста.
     """
-    if not citation_count or citation_count <= 0:
-        return cosine_similarity
-    return cosine_similarity + config.CITATION_BOOST_SCALE * math.log1p(citation_count)
+    score = cosine_similarity
+    if citation_count and citation_count > 0:
+        score += config.CITATION_BOOST_SCALE * math.log1p(citation_count)
+    score += _recency_boost(published_date)
+    return score
 
 
 def _triage(sub_question: SubQuestion, candidates: list[Candidate]) -> list[Candidate]:
@@ -162,7 +197,7 @@ def _triage(sub_question: SubQuestion, candidates: list[Candidate]) -> list[Cand
     for candidate, vec in zip(scoreable, candidate_vecs, strict=True):
         cosine_similarity = _cosine(query_vec, vec)
         candidate.triage_score = _combined_score(
-            cosine_similarity, candidate.meta.get("citation_count")
+            cosine_similarity, candidate.meta.get("citation_count"), candidate.meta.get("published_date")
         )
     scoreable.sort(key=lambda c: c.triage_score or 0.0, reverse=True)
     return scoreable[: config.FUNNEL_TRIAGE_TOP_N]

@@ -19,6 +19,12 @@ class DiscoveredItem:
     url: str = ""
     year: int | None = None
     citation_count: int | None = None
+    # ISO 8601 timestamp (day precision as a minimum) — `year` alone is too
+    # coarse for recency triage (funnel.py::_recency_boost): two papers from
+    # the same year but 11 months apart shouldn't score the same "freshness".
+    # Only arXiv currently populates this (has a precise submission date);
+    # other sources leave it None, and recency boost is simply 0 for them.
+    published_date: str | None = None
     meta: dict = field(default_factory=dict)
 
 

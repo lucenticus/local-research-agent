@@ -2,6 +2,20 @@
 
 Публичное API, ключ не нужен. `export.arxiv.org` редиректит http->https
 (проверено вручную) — используем https сразу, чтобы не тратить round-trip.
+
+`categories` (§ пользовательский запрос: агент должен хорошо работать по
+свежим статьям в области ИИ) — опциональный `cat:` фильтр, AND'ится с
+keyword-запросом. Без него keyword-поиск по всему arXiv нередко ловит
+физику/математику/econ, где случайно встретились те же слова (например,
+"attention" — термин и в ML, и в психологии/нейронауке). arXiv-категории:
+https://arxiv.org/category_taxonomy — `config.ARXIV_AI_CATEGORIES` держит
+дефолтный набор под ИИ/ML (cs.AI/cs.LG/cs.CL/cs.CV/cs.NE/stat.ML).
+
+`sortBy=relevance` остаётся дефолтом сознательно, не `submittedDate` —
+чистая сортировка по дате в узком `max_results` окне легко даёт совершенно
+нерелевантные, но новые статьи; "свежесть" вместо этого учитывается позже,
+в триаже воронки (`agent/funnel.py::_recency_boost`), поверх релевантной
+выдачи, а не вместо неё.
 """
 
 from __future__ import annotations
@@ -20,11 +34,19 @@ _TIMEOUT_SECONDS = 15
 class ArxivSource:
     name = "arxiv"
 
+    def __init__(self, categories: list[str] | None = None):
+        self._categories = categories
+
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
         # AND по словам, не точная фраза — вопросы на естественном языке почти
         # никогда не совпадают с заголовком/абстрактом статьи дословно.
         words = query.split()
-        search_query = " AND ".join(f"all:{w}" for w in words) if words else f"all:{query}"
+        keyword_query = " AND ".join(f"all:{w}" for w in words) if words else f"all:{query}"
+        if self._categories:
+            category_clause = " OR ".join(f"cat:{c}" for c in self._categories)
+            search_query = f"({category_clause}) AND ({keyword_query})"
+        else:
+            search_query = keyword_query
         params = urllib.parse.urlencode(
             {
                 "search_query": search_query,
@@ -60,5 +82,6 @@ class ArxivSource:
                 url=f"https://arxiv.org/abs/{arxiv_id}",
                 year=year,
                 citation_count=None,  # arXiv API не отдаёт цитируемость
+                published_date=published or None,
                 meta={"pdf_url": f"https://arxiv.org/pdf/{arxiv_id}"},
             )

@@ -83,9 +83,21 @@ def default_sources() -> list[Source]:
     GitHub (через MCP, sources/github_mcp.py) — опционально
     (config.GITHUB_MCP_ENABLED, по умолчанию выключен + нужен
     GITHUB_PERSONAL_ACCESS_TOKEN) — поиск по репозиториям для подвопросов
-    про конкретную библиотеку/инструмент."""
+    про конкретную библиотеку/инструмент.
+
+    `ArxivSource(categories=config.ARXIV_AI_CATEGORIES)` — ограничивает
+    keyword-поиск ИИ/ML-разделами arXiv (§ пользовательский запрос: агент
+    должен хорошо работать по научным статьям в области ИИ), иначе
+    неоднозначные термины (например, "attention") ловят статьи из физики/
+    нейронауки/econ, где то же слово значит другое. См. sources/arxiv.py."""
     web_source: Source = TavilySource() if os.environ.get("TAVILY_API_KEY") else WebSource()
-    sources: list[Source] = [ArxivSource(), SemanticScholarSource(), CrossrefSource(), WikipediaSource(), web_source]
+    sources: list[Source] = [
+        ArxivSource(categories=config.ARXIV_AI_CATEGORIES),
+        SemanticScholarSource(),
+        CrossrefSource(),
+        WikipediaSource(),
+        web_source,
+    ]
     if config.GITHUB_MCP_ENABLED and os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN"):
         sources.append(GitHubMCPSource())
     return sources

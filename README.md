@@ -184,7 +184,11 @@ of only searching a pre-built index:
   (real citation counts via `is-referenced-by-count`), Wikipedia covers
   general/background subquestions the others don't. The web source picks
   Tavily if `TAVILY_API_KEY` is set, otherwise falls back to a local
-  SearXNG instance (see below).
+  SearXNG instance (see below). `ArxivSource(categories=...)` — used by
+  `default_sources()` with `config.ARXIV_AI_CATEGORIES` (cs.AI/cs.LG/cs.CL/
+  cs.CV/cs.NE/stat.ML) — AND's a `cat:` filter into the keyword query so
+  ambiguous ML terms ("attention", "transformer") don't pull in physics/
+  neuroscience/econ papers that happen to use the same words.
 - `agent/planner.py` — question → subquestions via a deterministic
   heuristic, not an LLM call (small local models are unreliable
   multi-step planners, so planning logic lives in code).
@@ -219,6 +223,14 @@ Search breadth and budget are tunable in `config.py`:
   similarity to the subquestion plus a small log-scaled citation boost
   (`config.CITATION_BOOST_SCALE`) — a tie-breaker between similarly
   relevant candidates, not a substitute for relevance.
+- **Recency boost** (`agent/funnel.py::_recency_boost`,
+  `config.RECENCY_BOOST_SCALE`/`RECENCY_HALF_LIFE_DAYS`) — an independent,
+  exponentially-decaying boost from `published_date` (currently only arXiv
+  populates it). Citation boost alone structurally buries brand-new papers
+  — they can't have accumulated citations yet — which fights the goal of
+  actually surfacing what's new; the two boosts are summed, not traded off
+  against each other, so a fresh uncited paper and an old well-cited one
+  each get scored on their own axis.
 - `url` and `citation_count` flow through the whole pipeline (discovery →
   deep read → Qdrant → retrieval) and show up as clickable links (CLI:
   a plain URL most terminals auto-link; web UI: a real `<a href>` with a
