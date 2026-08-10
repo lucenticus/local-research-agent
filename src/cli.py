@@ -238,6 +238,34 @@ def cmd_serve(args: argparse.Namespace) -> None:
     uvicorn.run("src.web.app:app", host=args.host, port=args.port, reload=False)
 
 
+def cmd_digest(args: argparse.Namespace) -> None:
+    """Дайджест свежих статей по ИИ — browse по arXiv-категориям за
+    последние N дней, не Q&A. См. src/agent/digest.py."""
+    from .agent.digest import run_digest
+
+    result = run_digest(
+        days=args.days, categories=args.categories or None, limit=args.limit,
+        summarize=not args.no_summary,
+    )
+    print(
+        f"Дайджест: {len(result.items)} статей за последние {result.days} дн. "
+        f"в категориях {', '.join(result.categories)}\n"
+    )
+    if result.summary:
+        print("Обзор тем (сгенерирован моделью, не факт с источником):")
+        print(result.summary)
+        print()
+    for i, item in enumerate(result.items, start=1):
+        authors = item.meta.get("authors") or []
+        authors_line = ", ".join(authors[:3]) + (" и др." if len(authors) > 3 else "")
+        print(f"[{i}] {item.title}")
+        if authors_line:
+            print(f"    {authors_line}")
+        published = (item.published_date or "")[:10]
+        print(f"    {published}  {item.url}")
+        print()
+
+
 def cmd_mcp_serve(args: argparse.Namespace) -> None:
     """MCP-сервер (stdio) — ask()/research() как MCP-инструменты для
     любого MCP-клиента (Claude Code, Claude Desktop и т.п.), см.
@@ -277,6 +305,18 @@ def main() -> None:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.set_defaults(func=cmd_serve)
+
+    p_digest = sub.add_parser(
+        "digest", help="Дайджест свежих статей по ИИ за последние N дней (browse по arXiv, не Q&A)"
+    )
+    p_digest.add_argument("--days", type=int, default=None, help=f"По умолчанию {config.DIGEST_DEFAULT_DAYS}")
+    p_digest.add_argument(
+        "--category", action="append", dest="categories", default=[],
+        help=f"arXiv-категория, можно несколько раз (по умолчанию {config.ARXIV_AI_CATEGORIES})",
+    )
+    p_digest.add_argument("--limit", type=int, default=None, help=f"По умолчанию {config.DIGEST_DEFAULT_LIMIT}")
+    p_digest.add_argument("--no-summary", action="store_true", help="Не генерировать LLM-обзор тем")
+    p_digest.set_defaults(func=cmd_digest)
 
     p_mcp_serve = sub.add_parser(
         "mcp-serve", help="Запустить MCP-сервер (stdio) — ask/research как MCP-инструменты"

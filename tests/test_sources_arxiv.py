@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import io
 import urllib.request
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from src.sources.arxiv import ArxivSource
 
@@ -89,3 +92,70 @@ def test_discover_handles_missing_published_date():
     items = list(_AS()._parse(body))
     assert items[0].year is None
     assert items[0].published_date is None
+
+
+def test_parse_extracts_authors_and_categories():
+    body = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/2508.99999v1</id>
+    <title>Some Paper</title>
+    <summary>An abstract.</summary>
+    <published>2026-08-01T12:00:00Z</published>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <author><name>Alice Example</name></author>
+    <author><name>Bob Example</name></author>
+  </entry>
+</feed>
+""".encode("utf-8")
+    item = list(ArxivSource()._parse(body))[0]
+    assert item.meta["authors"] == ["Alice Example", "Bob Example"]
+    assert item.meta["categories"] == ["cs.CL", "cs.AI"]
+
+
+def _atom_with_published(*dates: str) -> str:
+    entries = "".join(
+        f"""<entry>
+    <id>http://arxiv.org/abs/2508.{i:05d}v1</id>
+    <title>Paper {i}</title>
+    <summary>Abstract {i}.</summary>
+    <published>{date}</published>
+  </entry>"""
+        for i, date in enumerate(dates)
+    )
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'
+
+
+def test_recent_requires_categories():
+    with pytest.raises(ValueError):
+        ArxivSource().recent(days=7, limit=10)
+
+
+def test_recent_sorts_by_submitted_date_not_relevance(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _FakeResponse(_atom_with_published(datetime.now(timezone.utc).isoformat()))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
+    assert "sortBy=submittedDate" in captured["url"]
+    assert "sortOrder=descending" in captured["url"]
+    assert "all%3A" not in captured["url"]  # без keyword-фильтра — только категории
+    assert "cat%3Acs.AI" in captured["url"]
+
+
+def test_recent_filters_out_items_older_than_days(monkeypatch):
+    fresh = datetime.now(timezone.utc)
+    old = fresh - timedelta(days=30)
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda request, timeout=None: _FakeResponse(_atom_with_published(fresh.isoformat(), old.isoformat())),
+    )
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
+    assert len(items) == 1
+    assert items[0].title == "Paper 0"

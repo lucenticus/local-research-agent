@@ -16,6 +16,10 @@ https://arxiv.org/category_taxonomy — `config.ARXIV_AI_CATEGORIES` держи�
 нерелевантные, но новые статьи; "свежесть" вместо этого учитывается позже,
 в триаже воронки (`agent/funnel.py::_recency_boost`), поверх релевантной
 выдачи, а не вместо неё.
+
+`recent()` — отдельный от `discover()` метод для дайджест-режима
+(`agent/digest.py`): browse "что нового в категории", а не поиск по
+конкретному запросу — сортировка по дате, без keyword-фильтра вовсе.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 
 from .base import DiscoveredItem
 
@@ -47,12 +52,30 @@ class ArxivSource:
             search_query = f"({category_clause}) AND ({keyword_query})"
         else:
             search_query = keyword_query
+        return self._query(search_query, limit=limit, sort_by="relevance")
+
+    def recent(self, days: int, limit: int) -> list[DiscoveredItem]:
+        """Последние публикации в `self._categories`, отсортированные по дате
+        (не по релевантности — здесь нет запроса, который можно было бы с
+        чем-то сравнивать). Отфильтровано клиентской стороной по `days` —
+        проще и надёжнее, чем городить `submittedDate:[...]` range-синтаксис
+        arXiv-запроса, а `max_results` и так достаточно мал, чтобы не тянуть
+        лишнего."""
+        if not self._categories:
+            raise ValueError("recent() needs categories - browsing all of arXiv unfiltered isn't useful")
+        category_clause = " OR ".join(f"cat:{c}" for c in self._categories)
+        items = self._query(category_clause, limit=limit, sort_by="submittedDate")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        return [item for item in items if _published_after(item, cutoff)]
+
+    def _query(self, search_query: str, *, limit: int, sort_by: str) -> list[DiscoveredItem]:
         params = urllib.parse.urlencode(
             {
                 "search_query": search_query,
                 "start": 0,
                 "max_results": limit,
-                "sortBy": "relevance",
+                "sortBy": sort_by,
+                **({"sortOrder": "descending"} if sort_by == "submittedDate" else {}),
             }
         )
         request = urllib.request.Request(
@@ -74,6 +97,14 @@ class ArxivSource:
             )
             published = entry.findtext("atom:published", default="", namespaces=_ATOM_NS) or ""
             year = int(published[:4]) if published[:4].isdigit() else None
+            authors = [
+                " ".join((name.text or "").split())
+                for name in entry.findall("atom:author/atom:name", _ATOM_NS)
+                if (name.text or "").strip()
+            ]
+            categories = [
+                cat.get("term", "") for cat in entry.findall("atom:category", _ATOM_NS) if cat.get("term")
+            ]
             yield DiscoveredItem(
                 id=f"arxiv:{arxiv_id}",
                 source=self.name,
@@ -83,5 +114,15 @@ class ArxivSource:
                 year=year,
                 citation_count=None,  # arXiv API не отдаёт цитируемость
                 published_date=published or None,
-                meta={"pdf_url": f"https://arxiv.org/pdf/{arxiv_id}"},
+                meta={"pdf_url": f"https://arxiv.org/pdf/{arxiv_id}", "authors": authors, "categories": categories},
             )
+
+
+def _published_after(item: DiscoveredItem, cutoff: datetime) -> bool:
+    if not item.published_date:
+        return False
+    try:
+        published = datetime.fromisoformat(item.published_date.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return published >= cutoff

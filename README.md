@@ -26,6 +26,8 @@ cp .env.example .env   # optional: add TAVILY_API_KEY for broader web search
 docker compose up -d   # optional: local SearXNG fallback if no Tavily key
 python -m src.cli research "What approaches exist for KV-cache compression in transformers?"
 
+python -m src.cli digest   # what's new in AI research this week (arXiv, no question needed)
+
 python -m src.cli serve   # web UI at http://127.0.0.1:8000
 
 python -m src.cli mcp-serve   # MCP server (stdio): exposes ask/research as tools
@@ -286,6 +288,34 @@ answer, the conversation keeps going and reuses the same `ResearchState`
   follow-up's own subquestions get budget and can trigger new discovery;
   `synthesize()` is given the prior Q&A pairs as history so "what about
   X"-style questions resolve correctly.
+
+## Digest: `digest` — what's new in AI research
+
+`research`/`ask` answer a specific question; `digest` is the opposite —
+browse, not Q&A: "what got published in the last N days" across
+`config.ARXIV_AI_CATEGORIES` (cs.AI/cs.LG/cs.CL/cs.CV/cs.NE/stat.ML by
+default), sorted by submission date, no relevance filtering against a
+question because there isn't one.
+
+```bash
+python -m src.cli digest                              # last 7 days, default categories
+python -m src.cli digest --days 3 --category cs.CL     # narrower window/category
+python -m src.cli digest --limit 30 --no-summary        # more items, skip the LLM overview
+```
+
+Deliberately not built on `agent/funnel.py`/`agent/loop.py` — those exist
+to answer a specific subquestion (discover → triage-by-relevance → deep
+read); a digest has no question to be relevant *to*, so running it through
+the funnel would mean inventing a fake query and then discarding freshness
+information the funnel doesn't track. `sources/arxiv.py::ArxivSource.recent()`
+is a separate, simpler path: `sortBy=submittedDate`, category filter only,
+no keyword query, filtered client-side to the requested day window.
+
+Output is a plain list (title, authors, date, link — no deep read, no
+indexing into Qdrant) plus an optional short LLM-written overview of themes
+across the batch (`config.DIGEST_SUMMARIZE`, on by default) — explicitly
+labeled as a generated overview in the output, not a cited/faithfulness-
+checked answer like `research()`'s.
 
 ## MCP: tools this agent uses, and using this agent as a tool
 

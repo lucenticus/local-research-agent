@@ -107,6 +107,16 @@ RECENCY_HALF_LIFE_DAYS = 90
 # ловят физику/нейронауку/econ, где то же слово значит другое.
 # https://arxiv.org/category_taxonomy
 ARXIV_AI_CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.NE", "stat.ML"]
+
+# --- Digest mode (agent/digest.py) — "что нового вышло", не Q&A ---
+
+DIGEST_DEFAULT_DAYS = 7
+DIGEST_DEFAULT_LIMIT = 20
+# Bounded LLM-обзор тем поверх аннотаций — не цитируемый ответ, честно
+# помечен как обзор в выводе. Можно выключить (--no-summary в cli.py) —
+# сам список статей отдельно от него не зависит.
+DIGEST_SUMMARIZE = True
+
 # Подвопрос считается закрытым, когда retrieval из Qdrant отдаёт чанки
 # минимум от стольких РАЗНЫХ источников (не просто N чанков — иначе одна
 # скачанная статья с 5 чанками тривиально "закрывала" бы подвопрос).
