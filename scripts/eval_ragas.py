@@ -44,7 +44,7 @@ from __future__ import annotations
 import warnings
 
 from src.providers import embed
-from src.store.lancedb_store import LanceDBStore
+from src.store.qdrant_store import QdrantStore
 
 from . import eval_data
 from .eval_data import require_langsmith_api_key
@@ -77,7 +77,7 @@ def main() -> None:
         client, config.LANGSMITH_EVAL_DATASET,
         description="local-research-agent: golden Q&A eval over corpus/ (correctness + RAGAS context quality)",
     )
-    store = LanceDBStore()
+    store = QdrantStore()
 
     def target(inputs: dict) -> dict:
         question = inputs["question"]

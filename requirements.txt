@@ -11,8 +11,9 @@ langsmith>=0.10
 # in langchain-community 0.4 (confirmed: `import ragas` crashes otherwise).
 ragas>=0.4.3,<0.5
 langchain-community==0.3.30
-lancedb>=0.15
-pyarrow
+# Docker-сервер (docker-compose.yml qdrant service), не embedded — см.
+# store/qdrant_store.py.
+qdrant-client>=1.19
 numpy
 beautifulsoup4
 pymupdf

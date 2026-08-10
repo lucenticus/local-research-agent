@@ -17,7 +17,7 @@ Recall@k — бинарная метрика (нашли/не нашли), он�
 from __future__ import annotations
 
 from src.providers import embed
-from src.store.lancedb_store import LanceDBStore
+from src.store.qdrant_store import QdrantStore
 
 from .eval_data import EVAL_CASES
 
@@ -36,7 +36,7 @@ def reciprocal_rank(hits: list[dict], expected_source_id: str) -> float:
 
 
 def main() -> None:
-    store = LanceDBStore()
+    store = QdrantStore()
     dense_hits_count = 0
     hybrid_hits_count = 0
     dense_rr_sum = 0.0

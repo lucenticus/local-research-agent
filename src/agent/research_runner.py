@@ -20,7 +20,7 @@ from ..sources.semantic_scholar import SemanticScholarSource
 from ..sources.tavily import TavilySource
 from ..sources.web import WebSource
 from ..sources.wikipedia import WikipediaSource
-from ..store.lancedb_store import LanceDBStore, document_to_hit
+from ..store.qdrant_store import QdrantStore, document_to_hit
 from . import funnel, loop
 from .progress import ProgressCallback
 from .state import ResearchState
@@ -31,7 +31,7 @@ from .synthesize import synthesize
 class SourceRef:
     title: str
     url: str = ""
-    citation_count: int | None = None  # None — неизвестно (не -1 сентинел LanceDB, см. ниже)
+    citation_count: int | None = None  # None — неизвестно (не -1 сентинел хранилища, см. ниже)
 
 
 @dataclass
@@ -91,7 +91,7 @@ def default_sources() -> list[Source]:
     return sources
 
 
-def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
+def retrieve(store: QdrantStore, question: str) -> list[dict[str, Any]]:
     """Retrieval + опциональный реранк поверх уже построенного индекса.
 
     Общий шаг и для `ask` (индекс из corpus/), и для `research` (индекс,
@@ -99,7 +99,7 @@ def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
     LangChain `VectorStoreRetriever` (`store.as_retriever()`) — стандартный
     интерфейс, совместимый с остальным LangChain-кодом, а не
     `search_hybrid()` напрямую; сама гибридная dense+FTS-логика при этом не
-    меняется, см. docstring `LanceDBStore`.
+    меняется, см. docstring `QdrantStore`.
     """
     candidate_k = config.RERANK_CANDIDATES_K if config.RERANK_ENABLED else config.TOP_K_RETRIEVE
     retriever = store.as_retriever(search_kwargs={"k": candidate_k})
@@ -112,7 +112,7 @@ def retrieve(store: LanceDBStore, question: str) -> list[dict[str, Any]]:
 def unique_sources(hits: list[dict[str, Any]]) -> list[SourceRef]:
     """Дедуп по заголовку + ссылка/цитируемость для рендера (CLI-текст,
     кликабельная ссылка в веб-интерфейсе). `citation_count == -1` — сентинел
-    LanceDB "неизвестно" (см. store/lancedb_store.py), превращаем в None —
+    хранилища "неизвестно" (см. store/qdrant_store.py), превращаем в None —
     вызывающему коду (UI) не нужно знать про внутренний сентинел хранилища.
     """
     seen: set[str] = set()
@@ -158,7 +158,7 @@ def _candidate_summaries(state) -> list[CandidateSummary]:
 
 def run_research(
     question: str,
-    store: LanceDBStore,
+    store: QdrantStore,
     on_progress: ProgressCallback | None = None,
 ) -> ResearchResult:
     state = loop.run(question, default_sources(), store, on_progress=on_progress)
@@ -181,7 +181,7 @@ def run_research(
 def run_followup(
     question: str,
     state: ResearchState,
-    store: LanceDBStore,
+    store: QdrantStore,
     on_progress: ProgressCallback | None = None,
     focus_candidate_id: str | None = None,
 ) -> ResearchResult:

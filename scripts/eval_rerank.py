@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from src import config
 from src.providers import embed, rerank
-from src.store.lancedb_store import LanceDBStore
+from src.store.qdrant_store import QdrantStore
 
 from .eval_data import EVAL_CASES
 
@@ -27,7 +27,7 @@ def hit_at_1(hits: list[dict], expected_source_id: str) -> bool:
 
 
 def main() -> None:
-    store = LanceDBStore()
+    store = QdrantStore()
     hybrid_hits_count = 0
     reranked_hits_count = 0
 

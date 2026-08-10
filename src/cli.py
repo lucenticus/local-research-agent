@@ -13,7 +13,7 @@ from .ingest.chunk import chunk_sections
 from .ingest.extract import Section, extract_html_sections, extract_pdf_sections, extract_sections
 from .providers import embed, tracing
 from .providers.mcp_client import content_to_text, get_mcp_tools
-from .store.lancedb_store import Chunk, LanceDBStore
+from .store.qdrant_store import Chunk, QdrantStore
 
 _SECTION_EXTRACTORS = {
     ".txt": lambda path: extract_sections(path.read_text(encoding="utf-8")),
@@ -79,19 +79,21 @@ def _chunks_from_sections(sections: list[Section], source_id: str, source_title:
     raw_chunks = chunk_sections(sections)
     if not raw_chunks:
         return []
-    vectors = embed.embed_texts([c.text for c in raw_chunks])
+    # dense+sparse одним forward pass'ом (providers/embed.py) — оба нужны
+    # для гибридного поиска в Qdrant, дешевле посчитать вместе, чем отдельно.
+    vectors, sparse_vectors = embed.embed_texts_hybrid([c.text for c in raw_chunks])
     return [
         Chunk(
             id=str(uuid.uuid4()), text=raw.text, source_id=source_id,
-            source_title=source_title, section=raw.section, vector=vector,
+            source_title=source_title, section=raw.section, vector=vector, sparse=sparse,
         )
-        for raw, vector in zip(raw_chunks, vectors, strict=True)
+        for raw, vector, sparse in zip(raw_chunks, vectors, sparse_vectors, strict=True)
     ]
 
 
 def cmd_index(args: argparse.Namespace) -> None:
     corpus_dir = Path(args.corpus_dir)
-    store = LanceDBStore()
+    store = QdrantStore()
     all_chunks: list[Chunk] = []
     for path in _iter_corpus_files(corpus_dir):
         sections = _SECTION_EXTRACTORS[path.suffix.lower()](path)
@@ -149,7 +151,7 @@ def _print_answer(question: str, hits: list[dict], gaps: list[str] | None = None
 
 
 def cmd_ask(args: argparse.Namespace) -> None:
-    store = LanceDBStore()
+    store = QdrantStore()
     hits = retrieve(store, args.question)
     _print_answer(args.question, hits)
 
@@ -183,8 +185,8 @@ def cmd_research(args: argparse.Namespace) -> None:
     внешних источников (arXiv, Semantic Scholar, web), в отличие от `ask`,
     который только ищет по уже построенному индексу.
 
-    Отдельная таблица от `ask`/`index` (config.RESEARCH_INDEX_TABLE) — иначе
-    demo-корпус из corpus/ просачивается в источники реальных ответов
+    Отдельная коллекция от `ask`/`index` (config.QDRANT_RESEARCH_COLLECTION) —
+    иначе demo-корпус из corpus/ просачивается в источники реальных ответов
     (найдено реальным прогоном).
 
     После первого ответа переходит в интерактивный follow-up-режим (тот же
@@ -193,7 +195,7 @@ def cmd_research(args: argparse.Namespace) -> None:
     уточняющий вопрос или написать `подробнее N`, чтобы форсировать
     deep-read N-го кандидата из списка выше и раскрыть эту тему подробнее.
     Пустая строка / Ctrl-D — выход."""
-    store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
+    store = QdrantStore(collection_name=config.QDRANT_RESEARCH_COLLECTION)
     result = run_research(args.question, store, on_progress=print)
     _print_research_result(result)
 

@@ -12,7 +12,7 @@ feature tour; this file holds the standing engineering rules.
   external calls where relevant), not "seems to work" from reading the
   code — see `## Tests` below.
 - **`# ARCH-Q:` instead of guessing.** Any assumption that can't be
-  verified without the real hardware (MPS device, MLX load call, LanceDB
+  verified without the real hardware (MPS device, MLX load call, Qdrant
   hybrid API, memory peaks) — mark it with this tag, don't silently guess.
 - Small commits per task. Type hints and docstrings on public functions.
 
@@ -53,14 +53,14 @@ feature tour; this file holds the standing engineering rules.
 
 ## Stack
 Qwen3.5-4B (Q4, MLX, own copy) · bge-m3 (dense+sparse) ·
-bge-reranker-v2-m3 (on demand) · LanceDB (embedded) · arXiv / Semantic
+bge-reranker-v2-m3 (on demand) · Qdrant (Docker) · arXiv / Semantic
 Scholar / CrossRef / Wikipedia / web (+ GitHub via MCP, off by default) ·
 LangGraph (orchestration in `agent/loop.py`) · LangChain:
 `providers/langchain_llm.py`/`langchain_embeddings.py` wrap the resident MLX
 models (not a separate implementation) as `BaseChatModel`/`Embeddings`;
 `sources/langchain_tools.py` wraps each `Source.discover()` as a
 `StructuredTool` (`agent/funnel.py` calls it via `.invoke()`);
-`store/lancedb_store.py::LanceDBStore` implements `VectorStore`
+`store/qdrant_store.py::QdrantStore` implements `VectorStore`
 (`agent/research_runner.retrieve()` goes through `.as_retriever()`);
 `agent/synthesize.py` is an LCEL chain (`prompt | ChatMLX() |
 StrOutputParser()`). The reranker (`providers/rerank.py`) and the
@@ -84,6 +84,7 @@ component above automatically via LangChain's callback system. See README's
 
 ## Running it
 ```
+docker compose up -d qdrant       # required — Qdrant vector store (see README)
 python -m src.cli index          # build the index from corpus/
 python -m src.cli ask "question"  # ask
 ```

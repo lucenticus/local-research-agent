@@ -18,6 +18,7 @@ describes the system as it stands today.
 uv venv
 uv pip install -r requirements.txt
 
+docker compose up -d qdrant   # Qdrant vector store — required, see below
 python -m src.cli index
 python -m src.cli ask "What is RAG?"
 
@@ -65,8 +66,8 @@ flowchart TB
         lcembed["langchain_embeddings.py<br/>MLXBGEEmbeddings<br/>wraps embed.py"]
     end
 
-    subgraph store["store/lancedb_store.py"]
-        lance[("LanceDB<br/>dense + FTS(BM25)<br/>hybrid = RRF<br/>+ VectorStore/.as_retriever()")]
+    subgraph store["store/qdrant_store.py"]
+        lance[("Qdrant (Docker)<br/>dense + sparse (bge-m3)<br/>hybrid = RRF<br/>+ VectorStore/.as_retriever()")]
     end
 
     subgraph ingest["ingest/"]
@@ -136,9 +137,13 @@ questions grounded in that index only (no internet access).
   References/Bibliography/Acknowledgments/Appendix sections.
 - `ingest/chunk.py` — `chunk_sections` chunks along section boundaries so a
   chunk never straddles two sections.
-- `store/lancedb_store.py` — hybrid search (`search_hybrid`): dense vector +
-  LanceDB full-text search (BM25), merged via RRF. `search_dense` is kept
-  as a baseline for comparison. `LanceDBStore` also implements
+- `store/qdrant_store.py` — hybrid search (`search_hybrid`): dense vector +
+  sparse vector (bge-m3's own lexical weights, same forward pass as dense —
+  see `providers/embed.py`), merged via Qdrant's Query API RRF fusion.
+  `search_dense` is kept as a baseline for comparison. Runs against a real
+  Qdrant server (Docker, `docker compose up -d qdrant`) — a deliberate
+  choice over Qdrant's embedded/serverless mode, see `QdrantStore`'s
+  docstring. `QdrantStore` also implements
   `langchain_core.vectorstores.VectorStore` (`similarity_search`/
   `add_texts`/`.as_retriever()`) as an additive layer on top of the same
   hybrid search — `agent/research_runner.retrieve()` (the shared retrieval
@@ -215,7 +220,7 @@ Search breadth and budget are tunable in `config.py`:
   (`config.CITATION_BOOST_SCALE`) — a tie-breaker between similarly
   relevant candidates, not a substitute for relevance.
 - `url` and `citation_count` flow through the whole pipeline (discovery →
-  deep read → LanceDB → retrieval) and show up as clickable links (CLI:
+  deep read → Qdrant → retrieval) and show up as clickable links (CLI:
   a plain URL most terminals auto-link; web UI: a real `<a href>` with a
   citation-count badge when known).
 
@@ -264,7 +269,7 @@ answer, the conversation keeps going and reuses the same `ResearchState`
   button that does the same forced deep-read. Every turn appends its own
   panel instead of overwriting the previous one, so the whole exchange
   stays visible.
-- Already-read candidates, embeddings, and LanceDB rows from earlier turns
+- Already-read candidates, embeddings, and Qdrant rows from earlier turns
   are reused as-is (a real cache hit, not a rebuild) — only the new
   follow-up's own subquestions get budget and can trigger new discovery;
   `synthesize()` is given the prior Q&A pairs as history so "what about
@@ -372,8 +377,8 @@ cp .env.example .env
 Without a Tavily key, use local SearXNG instead:
 
 ```bash
-docker compose up -d          # start (once, runs in the background)
-docker compose down           # stop
+docker compose up -d searxng  # start (once, runs in the background) — qdrant is a separate service, see Quickstart
+docker compose down           # stop everything (qdrant + searxng)
 curl "http://localhost:8888/search?q=test&format=json"   # sanity check
 ```
 
@@ -413,7 +418,7 @@ directly.
 
 Because this project already routes almost everything through
 LangChain/LangGraph (see the Stack section in `CLAUDE.md`: `ChatMLX`, the
-LCEL synthesis chain, `LanceDBStore` as a `VectorStore`, each `Source`
+LCEL synthesis chain, `QdrantStore` as a `VectorStore`, each `Source`
 wrapped as a `StructuredTool`, MCP tools, and the `agent/loop.py` research
 graph itself), turning tracing on instruments the whole pipeline at once —
 no per-component wiring needed. In the LangSmith UI, one `research()` call

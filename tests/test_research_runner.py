@@ -15,7 +15,7 @@ def testunique_sources_dedups_by_title_and_normalizes_citation_sentinel():
     refs = research_runner.unique_sources(hits)
     assert [r.title for r in refs] == ["A", "B"]
     assert refs[0].citation_count == 5
-    assert refs[1].citation_count is None  # -1 сентинел LanceDB -> None
+    assert refs[1].citation_count is None  # -1 сентинел хранилища -> None
     assert refs[1].url == ""
 
 

@@ -11,7 +11,7 @@ discovery/триаж) не изменилась и живёт в тех же м�
 которые тесты подменяют через monkeypatch, граф лишь вызывает их по имени.
 
 Gap-оценка — эвристика (§7: старт с порога покрытия, не LLM): подвопрос
-закрыт, когда retrieval из LanceDB отдаёт чанки минимум от
+закрыт, когда retrieval из Qdrant отдаёт чанки минимум от
 `FUNNEL_MIN_SOURCES_TO_COVER` разных источников СО СКОРОМ РЕРАНКЕРА выше
 `FUNNEL_MIN_RERANK_SCORE` ("порог score + покрытие подвопросов" —
 обе части, не только счёт источников). Найдено реальным прогоном 2026-08-05:
@@ -24,7 +24,7 @@ Gap-оценка — эвристика (§7: старт с порога пок�
 
 Retrieve сначала смотрит в уже существующий индекс (в т.ч. прочитанное
 прошлыми запросами) — это и есть кэш-хит: если предыдущий запрос уже привёл
-нужную статью в LanceDB, discovery/deep-read на этот раз не понадобится.
+нужную статью в Qdrant, discovery/deep-read на этот раз не понадобится.
 
 Milestone 4: когда все подвопросы покрыты, черновой синтез прогоняется через
 `agent/evaluate.py` — если faithfulness ниже `EVAL_FAITHFULNESS_THRESHOLD`,
@@ -53,7 +53,7 @@ from langgraph.graph import END, START, StateGraph
 from .. import config
 from ..providers import embed, rerank
 from ..sources.base import Source
-from ..store.lancedb_store import LanceDBStore
+from ..store.qdrant_store import QdrantStore
 from . import evaluate, funnel, planner
 from . import synthesize as synthesize_module
 from .progress import ProgressCallback, emit as _emit
@@ -64,7 +64,7 @@ def _distinct_sources(hits: list[dict]) -> set[str]:
     return {hit["source_id"] for hit in hits if hit.get("source_id")}
 
 
-def _is_covered(store: LanceDBStore, sub_question) -> bool:
+def _is_covered(store: QdrantStore, sub_question) -> bool:
     query_vector = embed.embed_texts([sub_question.text])[0]
     try:
         hits = store.search_hybrid(sub_question.text, query_vector, k=config.TOP_K_RETRIEVE)
@@ -79,7 +79,7 @@ def _is_covered(store: LanceDBStore, sub_question) -> bool:
     return len(_distinct_sources(relevant_hits)) >= config.FUNNEL_MIN_SOURCES_TO_COVER
 
 
-def _draft_is_faithful(question: str, store: LanceDBStore) -> bool:
+def _draft_is_faithful(question: str, store: QdrantStore) -> bool:
     """Черновой синтез по текущему индексу + faithfulness-проверка.
 
     Пустой/отсутствующий индекс или пустая выдача — не считаем "нечестным",
@@ -102,7 +102,7 @@ class _GraphState(TypedDict):
     research_state: ResearchState
     question: str
     sources: list[Source]
-    store: LanceDBStore
+    store: QdrantStore
     on_progress: ProgressCallback | None
     force_discovery: bool
     low_faithfulness_retry_used: bool
@@ -240,7 +240,7 @@ _GRAPH = _build_graph()
 def run(
     question: str,
     sources: list[Source],
-    store: LanceDBStore,
+    store: QdrantStore,
     budget: Budget | None = None,
     on_progress: ProgressCallback | None = None,
     state: ResearchState | None = None,

@@ -27,5 +27,5 @@ class Source(Protocol):
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
         """Возвращает только метаданные (title/abstract/год/цитируемость) —
-        никакого полного текста и записи в LanceDB на этом шаге (§1)."""
+        никакого полного текста и записи в векторное хранилище на этом шаге (§1)."""
         ...

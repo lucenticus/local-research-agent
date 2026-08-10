@@ -10,7 +10,7 @@ polling (`GET /api/jobs/{id}`), без WebSocket/SSE — на масштабе �
 пока предыдущий не завершён, отклоняется 409, а не встаёт в очередь молча.
 
 Follow-up-вопросы ("уточни", "раскрой подробнее тему N") продолжают тот же
-диалог — `Session` хранит `ResearchState`/`LanceDBStore` между ходами (job'ами)
+диалог — `Session` хранит `ResearchState`/`QdrantStore` между ходами (job'ами)
 одного разговора, см. `agent/research_runner.run_followup`. Первый вопрос
 диалога создаёт сессию (`POST /api/jobs`), follow-up идёт в ту же сессию
 (`POST /api/sessions/{session_id}/followup`) — оба возвращают job_id и
@@ -34,7 +34,7 @@ from .. import config
 from ..agent.research_runner import ResearchResult, run_followup, run_research
 from ..agent.state import ResearchState
 from ..providers import tracing
-from ..store.lancedb_store import LanceDBStore
+from ..store.qdrant_store import QdrantStore
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -60,7 +60,7 @@ class Job:
 @dataclass
 class Session:
     id: str
-    store: LanceDBStore
+    store: QdrantStore
     state: ResearchState | None = None  # заполняется после первого завершённого хода
 
 
@@ -175,7 +175,7 @@ def create_job(payload: ResearchRequest) -> dict[str, Any]:
         # Отдельная таблица от `ask`/`index` — см. config.RESEARCH_INDEX_TABLE.
         # Создаётся только после успешного _claim_job_slot — если слот занят,
         # незачем заводить сессию, которой некому будет воспользоваться.
-        session = Session(id=session_id, store=LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE))
+        session = Session(id=session_id, store=QdrantStore(collection_name=config.QDRANT_RESEARCH_COLLECTION))
         _sessions[session_id] = session
 
     run = lambda on_progress: run_research(job.question, session.store, on_progress=on_progress)

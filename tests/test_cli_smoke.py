@@ -1,19 +1,30 @@
 """Интеграционный smoke-тест end-to-end на крошечном корпусе.
 
 LLM и эмбеддинги мокаются (§7 CLAUDE.md: тесты офлайн и быстрые) — проверяем
-реальную склейку index -> LanceDB -> search -> synthesize -> cli.
+реальную склейку index -> Qdrant -> search -> synthesize -> cli.
+
+`QdrantStore` подменяется на embedded (`path=tmp_path`) — тот же трюк, что
+раньше был через `config.INDEX_DIR` для LanceDB: реальный векторный поиск
+(не мок), но без Docker и сети (см. `QdrantStore.__init__`'s `path` — только
+для тестов, продовый код всегда ходит в Docker-сервер по `config.QDRANT_URL`).
+`embed.embed_sparse` тоже мокается — `add_texts`/`_chunks_from_sections`
+теперь считают sparse-вектор при индексации, а `search_hybrid` — при поиске,
+оба реального bge-m3-вызова здесь не нужны для теста склейки.
 """
 
 from __future__ import annotations
 
 import argparse
 
-from src import cli, config
+from src import cli
 from src.providers import embed, llm, rerank
+from src.store.qdrant_store import QdrantStore
 
 
 def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(config, "INDEX_DIR", tmp_path / "lancedb")
+    monkeypatch.setattr(cli, "QdrantStore", lambda *a, **kw: QdrantStore(path=str(tmp_path / "qdrant")))
+    monkeypatch.setattr(embed, "embed_sparse", lambda texts: [{} for _ in texts])
+    monkeypatch.setattr(embed, "embed_texts_hybrid", lambda texts: ([[float(len(t))] for t in texts], [{} for _ in texts]))
 
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
@@ -51,7 +62,8 @@ class _FakeMCPTool:
 def test_index_pulls_extra_docs_via_mcp_filesystem_server(tmp_path, monkeypatch, capsys):
     """`--mcp-dir` — MCP filesystem-сервер замокан офлайн (search_files +
     read_text_file), реальный npx-процесс не поднимается."""
-    monkeypatch.setattr(config, "INDEX_DIR", tmp_path / "lancedb")
+    monkeypatch.setattr(cli, "QdrantStore", lambda *a, **kw: QdrantStore(path=str(tmp_path / "qdrant")))
+    monkeypatch.setattr(embed, "embed_texts_hybrid", lambda texts: ([[float(len(t))] for t in texts], [{} for _ in texts]))
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
 

@@ -55,7 +55,7 @@ from ..providers.mcp_client import content_to_text, get_single_tool
 from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
-from ..store.lancedb_store import Chunk, LanceDBStore
+from ..store.qdrant_store import Chunk, QdrantStore
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
 
@@ -245,7 +245,7 @@ def deep_read_candidate(
     candidate: Candidate,
     sub_question_text: str,
     state: ResearchState,
-    store: LanceDBStore,
+    store: QdrantStore,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Deep-read одного кандидата (внутренний шаг `run()`, вынесен отдельной
@@ -261,7 +261,7 @@ def deep_read_candidate(
         sections = _deep_read_sections(candidate)
         raw_chunks = chunk_sections(sections) or chunk_text(candidate.abstract)
         if raw_chunks:
-            vectors = embed.embed_texts([c.text for c in raw_chunks])
+            vectors, sparse_vectors = embed.embed_texts_hybrid([c.text for c in raw_chunks])
             citation_count = candidate.meta.get("citation_count")
             chunks = [
                 Chunk(
@@ -271,10 +271,11 @@ def deep_read_candidate(
                     source_title=candidate.title,
                     section=raw.section,
                     vector=vector,
+                    sparse=sparse,
                     url=candidate.meta.get("url") or "",
                     citation_count=citation_count if citation_count is not None else -1,
                 )
-                for raw, vector in zip(raw_chunks, vectors, strict=True)
+                for raw, vector, sparse in zip(raw_chunks, vectors, sparse_vectors, strict=True)
             ]
             store.add_chunks(chunks)
             state.add_findings(
@@ -293,11 +294,11 @@ def run(
     sub_question: SubQuestion,
     sources: list[Source],
     state: ResearchState,
-    store: LanceDBStore,
+    store: QdrantStore,
     discovery_limit: int | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> None:
-    """Одна итерация воронки для одного подвопроса — расширяет state и LanceDB.
+    """Одна итерация воронки для одного подвопроса — расширяет state и Qdrant.
 
     `discovery_limit` растёт с каждой повторной попыткой (см. agent/loop.py) —
     так повторный проход реально достаёт статьи, которых не было в первой

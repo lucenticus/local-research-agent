@@ -1,7 +1,7 @@
 """LangSmith tracing — observability for the whole system, not a separate
 integration to instrument. This project already routes nearly everything
 through LangChain/LangGraph (`ChatMLX`, the LCEL synthesis chain,
-`LanceDBStore` as a `VectorStore`, each `Source` wrapped as a
+`QdrantStore` as a `VectorStore`, each `Source` wrapped as a
 `StructuredTool`, MCP tools, and the `agent/loop.py` research graph itself)
 — LangSmith hooks into LangChain's callback system, so turning it on traces
 every one of those automatically. Nothing here calls LangSmith directly;

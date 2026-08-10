@@ -16,13 +16,13 @@ from src import config
 from src.agent.evaluate import evaluate
 from src.agent.synthesize import synthesize
 from src.providers import embed, rerank
-from src.store.lancedb_store import LanceDBStore
+from src.store.qdrant_store import QdrantStore
 
 from .eval_retrieval import EVAL_PAIRS
 
 
 def main() -> None:
-    store = LanceDBStore()
+    store = QdrantStore()
     coverage_sum = 0.0
     faithfulness_sum = 0.0
 

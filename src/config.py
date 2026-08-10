@@ -21,9 +21,11 @@ try:
 except ImportError:
     pass
 CORPUS_DIR = REPO_ROOT / "corpus"
-INDEX_DIR = REPO_ROOT / ".index" / "lancedb"
-INDEX_TABLE = "chunks"
-# Отдельная таблица для `research` (Milestone 3+), в той же LanceDB-базе.
+# Docker-сервер (docker-compose.yml), не embedded — поднять перед использованием:
+#   docker compose up -d qdrant
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = "chunks"
+# Отдельная коллекция для `research` (Milestone 3+), в том же Qdrant.
 # Найдено реальным прогоном 2026-08-06: `research` и `ask` изначально делили
 # одну таблицу — тестовый demo-корпус (corpus/) просачивался в источники
 # реальных research-ответов на никак не связанные вопросы (например,
@@ -31,7 +33,7 @@ INDEX_TABLE = "chunks"
 # что была в том же индексе). `ask`/`index` работают с локальными файлами
 # corpus/, `research`/`serve` — с находками воронки; общий кэш между ними не
 # нужен и вреден.
-RESEARCH_INDEX_TABLE = "research_chunks"
+QDRANT_RESEARCH_COLLECTION = "research_chunks"
 
 # Подтверждено реальным запуском на M4 Air 2026-08-04: репо существует и
 # грузится через mlx_lm.load (~2.9ГБ, уже был в HF-кэше этой машины). Проект
@@ -88,7 +90,7 @@ FUNNEL_TRIAGE_TOP_N = 6
 # но не способный вытащить нерелевантную статью выше релевантной (типичный
 # разброс косинуса шире). См. docstring funnel.py.
 CITATION_BOOST_SCALE = 0.03
-# Подвопрос считается закрытым, когда retrieval из LanceDB отдаёт чанки
+# Подвопрос считается закрытым, когда retrieval из Qdrant отдаёт чанки
 # минимум от стольких РАЗНЫХ источников (не просто N чанков — иначе одна
 # скачанная статья с 5 чанками тривиально "закрывала" бы подвопрос).
 # Эвристика gap-оценки (§7: старт с порога покрытия, не LLM). Увеличено

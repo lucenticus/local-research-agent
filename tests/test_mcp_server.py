@@ -13,7 +13,7 @@ def test_ask_returns_answer_with_sources(monkeypatch):
         {"text": "whales are mammals", "source_title": "whales.md", "url": "", "citation_count": -1},
     ])
     monkeypatch.setattr(mcp_server, "synthesize", lambda question, hits: "A whale is a mammal [1].")
-    monkeypatch.setattr(mcp_server, "LanceDBStore", lambda: object())
+    monkeypatch.setattr(mcp_server, "QdrantStore", lambda: object())
 
     result = mcp_server.ask("What is a whale?")
     assert "A whale is a mammal [1]." in result
@@ -23,7 +23,7 @@ def test_ask_returns_answer_with_sources(monkeypatch):
 def test_ask_without_hits_returns_bare_answer(monkeypatch):
     monkeypatch.setattr(mcp_server, "retrieve", lambda store, question: [])
     monkeypatch.setattr(mcp_server, "synthesize", lambda question, hits: "No information found.")
-    monkeypatch.setattr(mcp_server, "LanceDBStore", lambda: object())
+    monkeypatch.setattr(mcp_server, "QdrantStore", lambda: object())
 
     assert mcp_server.ask("q") == "No information found."
 
@@ -37,7 +37,7 @@ def test_research_formats_answer_sources_and_gaps(monkeypatch):
             candidates=[], gaps=["how does eviction work?"], iterations=2, read_count=3, candidates_count=5,
         ),
     )
-    monkeypatch.setattr(mcp_server, "LanceDBStore", lambda table_name=None: object())
+    monkeypatch.setattr(mcp_server, "QdrantStore", lambda collection_name=None: object())
 
     result = mcp_server.research("What is a KV cache?")
     assert "KV-cache stores key/value tensors [1]." in result
@@ -54,7 +54,7 @@ def test_research_without_gaps_omits_gaps_section(monkeypatch):
             answer="ok", sources=[], gaps=[], candidates=[], iterations=1, read_count=1, candidates_count=1,
         ),
     )
-    monkeypatch.setattr(mcp_server, "LanceDBStore", lambda table_name=None: object())
+    monkeypatch.setattr(mcp_server, "QdrantStore", lambda collection_name=None: object())
 
     result = mcp_server.research("q")
     assert "Uncovered subquestions" not in result

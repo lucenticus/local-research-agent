@@ -16,7 +16,7 @@ from . import config
 from .agent.research_runner import SourceRef, retrieve, run_research, unique_sources
 from .agent.synthesize import synthesize
 from .providers import tracing
-from .store.lancedb_store import LanceDBStore
+from .store.qdrant_store import QdrantStore
 
 mcp = FastMCP("local-research-agent")
 
@@ -38,7 +38,7 @@ def ask(question: str) -> str:
     """Answer a question from the locally indexed corpus (build it first
     with the `index` CLI command) — no internet access, grounded only in
     what's already indexed."""
-    store = LanceDBStore()
+    store = QdrantStore()
     hits = retrieve(store, question)
     answer = synthesize(question, hits)
     sources = unique_sources(hits)
@@ -51,7 +51,7 @@ def research(question: str) -> str:
     Wikipedia, and the web, reads what it finds, and returns a cited
     answer with self-verification. Can take a couple of minutes — it's a
     real multi-source search, not a single retrieval call."""
-    store = LanceDBStore(table_name=config.RESEARCH_INDEX_TABLE)
+    store = QdrantStore(collection_name=config.QDRANT_RESEARCH_COLLECTION)
     result = run_research(question, store)
     parts = [result.answer, "", "Sources:", _format_sources(result.sources)]
     if result.gaps:

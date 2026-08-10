@@ -33,7 +33,7 @@ from __future__ import annotations
 from src import config
 from src.agent.synthesize import synthesize
 from src.providers import embed, llm, rerank
-from src.store.lancedb_store import LanceDBStore
+from src.store.qdrant_store import QdrantStore
 
 from .eval_data import ensure_dataset, require_langsmith_api_key
 
@@ -56,7 +56,7 @@ def _judge(question: str, reference: str, generated: str) -> bool:
     return verdict.startswith("yes")
 
 
-def _answer(store: LanceDBStore, question: str) -> str:
+def _answer(store: QdrantStore, question: str) -> str:
     query_vector = embed.embed_texts([question])[0]
     hits = store.search_hybrid(question, query_vector, k=config.RERANK_CANDIDATES_K)
     if config.RERANK_ENABLED:
@@ -74,7 +74,7 @@ def main() -> None:
         client, config.LANGSMITH_EVAL_DATASET,
         description="local-research-agent: golden Q&A eval over corpus/ (correctness + RAGAS context quality)",
     )
-    store = LanceDBStore()
+    store = QdrantStore()
 
     def target(inputs: dict) -> dict:
         return {"answer": _answer(store, inputs["question"])}
