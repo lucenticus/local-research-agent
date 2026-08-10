@@ -282,6 +282,19 @@
   .digest-item-title a:hover { color: var(--accent); text-decoration: underline; }
   .digest-item-meta { color: var(--muted); font-size: 12px; margin: 2px 0 4px; }
   .digest-item-abstract { font-size: 13px; color: var(--text); opacity: 0.85; }
+  .digest-item-analysis {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .digest-analysis-summary { margin-bottom: 6px; }
+  .digest-analysis-meta { color: var(--muted); margin-bottom: 6px; }
+  .digest-analysis-authors { margin: 0; padding-left: 18px; }
+  .digest-analysis-authors li { margin-bottom: 2px; }
+  .digest-analysis-unindexed { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -334,6 +347,7 @@
       <label>За последние <input type="number" id="digest-days" value="7" min="1" max="90"> дн.</label>
       <label>Показать <input type="number" id="digest-limit" value="20" min="1" max="100"> статей</label>
       <label><input type="checkbox" id="digest-no-summary"> без обзора тем</label>
+      <label><input type="checkbox" id="digest-deep"> глубокий анализ (медленнее)</label>
       <button id="digest-submit" type="submit">Собрать дайджест</button>
       <div class="category-list" id="digest-categories"></div>
     </form>
@@ -676,6 +690,7 @@ const digestQueryEl = document.getElementById("digest-query");
 const digestDaysEl = document.getElementById("digest-days");
 const digestLimitEl = document.getElementById("digest-limit");
 const digestNoSummaryEl = document.getElementById("digest-no-summary");
+const digestDeepEl = document.getElementById("digest-deep");
 const digestProgressPanel = document.getElementById("digest-progress-panel");
 const digestProgressList = document.getElementById("digest-progress-list");
 const digestErrorPanel = document.getElementById("digest-error-panel");
@@ -712,6 +727,47 @@ function renderDigestError(message) {
   digestResultPanel.classList.add("hidden");
   digestErrorPanel.classList.remove("hidden");
   digestErrorText.textContent = "Ошибка: " + message;
+}
+
+function renderDigestAnalysis(analysis) {
+  const box = document.createElement("div");
+  box.className = "digest-item-analysis";
+
+  const summary = document.createElement("div");
+  summary.className = "digest-analysis-summary";
+  summary.textContent = analysis.summary_ru;
+  box.appendChild(summary);
+
+  if (!analysis.details) {
+    const unindexed = document.createElement("div");
+    unindexed.className = "digest-analysis-unindexed";
+    unindexed.textContent = "Метаданные: — (статья ещё не проиндексирована в OpenAlex)";
+    box.appendChild(unindexed);
+    return box;
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "digest-analysis-meta";
+  const cited = analysis.details.citation_count !== null && analysis.details.citation_count !== undefined
+    ? analysis.details.citation_count : "—";
+  const venue = analysis.details.venue || "—";
+  meta.textContent = `Цитирований: ${cited} · Venue: ${venue}`;
+  box.appendChild(meta);
+
+  if (analysis.details.authors && analysis.details.authors.length > 0) {
+    const list = document.createElement("ul");
+    list.className = "digest-analysis-authors";
+    analysis.details.authors.forEach((author) => {
+      const li = document.createElement("li");
+      const inst = author.institution || "—";
+      const h = author.h_index !== null && author.h_index !== undefined ? author.h_index : "—";
+      li.textContent = `${author.name} — ${inst}, h-index: ${h}`;
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+  }
+
+  return box;
 }
 
 function renderDigestResult(result) {
@@ -757,6 +813,10 @@ function renderDigestResult(result) {
     abstract.className = "digest-item-abstract";
     abstract.textContent = item.abstract;
     div.appendChild(abstract);
+
+    if (item.analysis) {
+      div.appendChild(renderDigestAnalysis(item.analysis));
+    }
 
     digestItemsEl.appendChild(div);
   });
@@ -810,6 +870,7 @@ digestForm.addEventListener("submit", async (e) => {
     categories: checked.length > 0 ? checked : null,
     summarize: !digestNoSummaryEl.checked,
     query: digestQueryEl.value.trim() || null,
+    deep: digestDeepEl.checked,
   };
 
   let resp;

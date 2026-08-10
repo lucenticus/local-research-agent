@@ -105,6 +105,7 @@ class DigestRequest(BaseModel):
     limit: int | None = None
     summarize: bool | None = None
     query: str | None = None
+    deep: bool = False
 
 
 def _job_to_dict(job: Job) -> dict[str, Any]:
@@ -143,6 +144,24 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
     }
 
 
+def _analysis_to_dict(analysis: Any) -> dict[str, Any] | None:
+    if analysis is None:
+        return None
+    details = analysis.details
+    return {
+        "summary_ru": analysis.summary_ru,
+        "details": None
+        if details is None
+        else {
+            "citation_count": details.citation_count,
+            "venue": details.venue,
+            "authors": [
+                {"name": a.name, "institution": a.institution, "h_index": a.h_index} for a in details.authors
+            ],
+        },
+    }
+
+
 def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
     return {
         "job_id": job.id,
@@ -162,6 +181,7 @@ def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
                     "url": item.url,
                     "published_date": item.published_date,
                     "authors": item.meta.get("authors") or [],
+                    "analysis": _analysis_to_dict(job.result.analyses.get(item.id)),
                 }
                 for item in job.result.items
             ],
@@ -171,7 +191,7 @@ def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
 
 
 def _run_digest_job(job: DigestJob, days: int | None, categories: list[str] | None,
-                     limit: int | None, summarize: bool | None, query: str | None) -> None:
+                     limit: int | None, summarize: bool | None, query: str | None, deep: bool) -> None:
     global _current_job_id
     try:
         def on_progress(message: str) -> None:
@@ -179,7 +199,7 @@ def _run_digest_job(job: DigestJob, days: int | None, categories: list[str] | No
                 job.progress.append(message)
 
         result = run_digest(days=days, categories=categories, limit=limit,
-                             summarize=summarize, query=query, on_progress=on_progress)
+                             summarize=summarize, query=query, deep=deep, on_progress=on_progress)
         with _jobs_lock:
             job.result = result
             job.status = "done"
@@ -307,7 +327,7 @@ def create_digest(payload: DigestRequest) -> dict[str, Any]:
 
     threading.Thread(
         target=_run_digest_job,
-        args=(job, payload.days, payload.categories, payload.limit, payload.summarize, payload.query),
+        args=(job, payload.days, payload.categories, payload.limit, payload.summarize, payload.query, payload.deep),
         daemon=True,
     ).start()
     return {"job_id": job.id}

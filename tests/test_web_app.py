@@ -10,10 +10,11 @@ import time
 
 from fastapi.testclient import TestClient
 
-from src.agent.digest import DigestResult
+from src.agent.digest import DigestResult, ItemAnalysis
 from src.agent.research_runner import CandidateSummary, ResearchResult, SourceRef
 from src.agent.state import ResearchState
 from src.sources.base import DiscoveredItem
+from src.sources.citations import AuthorDetails, PaperDetails
 from src.web import app as app_module
 
 
@@ -225,7 +226,7 @@ def test_get_unknown_digest_returns_404(monkeypatch):
 def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
     _reset_app_state(monkeypatch)
 
-    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, query=None, on_progress=None):
+    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, query=None, deep=False, on_progress=None):
         if on_progress:
             on_progress("Ищем статьи…")
         item = DiscoveredItem(
@@ -252,9 +253,62 @@ def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
     assert data["result"]["items"] == [
         {
             "title": "Paper", "abstract": "Abstract", "url": "https://arxiv.org/abs/1",
-            "published_date": "2026-08-07T00:00:00Z", "authors": ["A. Uthor"],
+            "published_date": "2026-08-07T00:00:00Z", "authors": ["A. Uthor"], "analysis": None,
         }
     ]
+
+
+def test_deep_digest_includes_analysis_in_items(monkeypatch):
+    _reset_app_state(monkeypatch)
+
+    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, query=None, deep=False, on_progress=None):
+        assert deep is True
+        item = DiscoveredItem(id="arxiv:1", source="arxiv", title="Paper", abstract="Abstract")
+        analyses = {
+            "arxiv:1": ItemAnalysis(
+                summary_ru="Резюме статьи.",
+                details=PaperDetails(
+                    citation_count=5, venue="NeurIPS",
+                    authors=[AuthorDetails(name="A. Uthor", institution="MIT", h_index=12)],
+                ),
+            )
+        }
+        return DigestResult(items=[item], days=7, categories=["cs.AI"], analyses=analyses)
+
+    monkeypatch.setattr(app_module, "run_digest", fake_run_digest)
+
+    client = TestClient(app_module.app)
+    create_resp = client.post("/api/digest", json={"deep": True})
+    job_id = create_resp.json()["job_id"]
+
+    data = _wait_until_digest_done(client, job_id)
+    assert data["status"] == "done"
+    assert data["result"]["items"][0]["analysis"] == {
+        "summary_ru": "Резюме статьи.",
+        "details": {
+            "citation_count": 5,
+            "venue": "NeurIPS",
+            "authors": [{"name": "A. Uthor", "institution": "MIT", "h_index": 12}],
+        },
+    }
+
+
+def test_deep_digest_item_analysis_details_none_when_unindexed(monkeypatch):
+    _reset_app_state(monkeypatch)
+
+    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, query=None, deep=False, on_progress=None):
+        item = DiscoveredItem(id="arxiv:1", source="arxiv", title="Paper", abstract="Abstract")
+        analyses = {"arxiv:1": ItemAnalysis(summary_ru="Резюме.", details=None)}
+        return DigestResult(items=[item], days=7, categories=["cs.AI"], analyses=analyses)
+
+    monkeypatch.setattr(app_module, "run_digest", fake_run_digest)
+
+    client = TestClient(app_module.app)
+    create_resp = client.post("/api/digest", json={"deep": True})
+    job_id = create_resp.json()["job_id"]
+
+    data = _wait_until_digest_done(client, job_id)
+    assert data["result"]["items"][0]["analysis"] == {"summary_ru": "Резюме.", "details": None}
 
 
 def test_digest_job_reports_error_status_on_exception(monkeypatch):

@@ -83,3 +83,108 @@ def test_lookup_accepts_closely_matching_title(monkeypatch):
         "LoRC: Low-Rank Compression for LLMs KV Cache with a Progressive Compression Strategy"
     )
     assert result == 1
+
+
+def _dispatch_by_url(responses: dict[str, dict]):
+    """Роутит fake urlopen по подстроке в URL — works-запрос и authors-запрос
+    идут на разные пути, оба через один и тот же _common.fetch_json."""
+
+    def _urlopen(request, timeout=None):
+        for marker, payload in responses.items():
+            if marker in request.full_url:
+                return _FakeResponse(payload)
+        raise AssertionError(f"unexpected URL: {request.full_url}")
+
+    return _urlopen
+
+
+def test_lookup_paper_details_returns_none_when_work_not_found(monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", _dispatch_by_url({"api.openalex.org/works": {"results": []}})
+    )
+    assert citations.lookup_paper_details("some very fresh preprint") is None
+
+
+def test_lookup_paper_details_returns_citations_venue_and_authors(monkeypatch):
+    work_payload = {
+        "results": [
+            {
+                "title": "Attention Is All You Need",
+                "cited_by_count": 6602,
+                "primary_location": {"source": {"display_name": "NeurIPS"}},
+                "authorships": [
+                    {
+                        "author": {"display_name": "Ashish Vaswani", "id": "https://openalex.org/A1"},
+                        "institutions": [{"display_name": "Google"}],
+                    },
+                    {
+                        "author": {"display_name": "Noam Shazeer", "id": "https://openalex.org/A2"},
+                        "institutions": [],
+                    },
+                ],
+            }
+        ]
+    }
+    authors_payload = {
+        "results": [
+            {"id": "https://openalex.org/A1", "summary_stats": {"h_index": 29}},
+            {"id": "https://openalex.org/A2", "summary_stats": {"h_index": 34}},
+        ]
+    }
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        _dispatch_by_url(
+            {"api.openalex.org/works": work_payload, "api.openalex.org/authors": authors_payload}
+        ),
+    )
+
+    result = citations.lookup_paper_details("Attention Is All You Need")
+    assert result.citation_count == 6602
+    assert result.venue == "NeurIPS"
+    assert result.authors == [
+        citations.AuthorDetails(name="Ashish Vaswani", institution="Google", h_index=29),
+        citations.AuthorDetails(name="Noam Shazeer", institution=None, h_index=34),
+    ]
+
+
+def test_lookup_paper_details_handles_missing_venue_and_h_index(monkeypatch):
+    work_payload = {
+        "results": [
+            {
+                "title": "Some Paper",
+                "cited_by_count": 3,
+                "authorships": [
+                    {"author": {"display_name": "A. Uthor", "id": "https://openalex.org/A9"}, "institutions": []}
+                ],
+            }
+        ]
+    }
+    authors_payload = {"results": []}  # автор ещё не найден в OpenAlex Authors
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        _dispatch_by_url(
+            {"api.openalex.org/works": work_payload, "api.openalex.org/authors": authors_payload}
+        ),
+    )
+
+    result = citations.lookup_paper_details("Some Paper")
+    assert result.venue is None
+    assert result.authors == [citations.AuthorDetails(name="A. Uthor", institution=None, h_index=None)]
+
+
+def test_lookup_paper_details_skips_author_batch_call_when_no_author_ids(monkeypatch):
+    work_payload = {
+        "results": [
+            {"title": "Anon Paper", "cited_by_count": 0, "authorships": [{"author": {"display_name": "Anon"}}]}
+        ]
+    }
+
+    def _urlopen(request, timeout=None):
+        if "api.openalex.org/authors" in request.full_url:
+            raise AssertionError("must not call authors endpoint when no author has an id")
+        return _FakeResponse(work_payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    result = citations.lookup_paper_details("Anon Paper")
+    assert result.authors == [citations.AuthorDetails(name="Anon", institution=None, h_index=None)]

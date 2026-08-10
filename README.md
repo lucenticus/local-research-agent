@@ -322,6 +322,38 @@ across the batch (`config.DIGEST_SUMMARIZE`, on by default) — explicitly
 labeled as a generated overview in the output, not a cited/faithfulness-
 checked answer like `research()`'s.
 
+### Deep analysis: `--deep`
+
+Off by default — per-paper analysis instead of just a list:
+
+```bash
+python -m src.cli digest --deep --limit 5
+```
+
+For each paper (capped at `config.DIGEST_DEEP_MAX_ITEMS`, independent of
+`--limit` — this is materially slower, one extra LLM call and one extra
+network lookup per paper):
+
+- A Russian-language summary (bounded LLM call on just that paper's title +
+  abstract, told explicitly not to add facts beyond the given text).
+- Real citation count, venue, and per-author institution + h-index, via
+  `sources/citations.py::lookup_paper_details` (OpenAlex, no key needed —
+  same title-search-plus-similarity-check pattern already used for citation
+  backfill, plus a batched `/authors?filter=id:A1|A2|...` call for h-index
+  so it's one extra request per paper, not one per author).
+
+**On author affiliations specifically** (this was asked for explicitly):
+arXiv's own API doesn't expose them at all. Guessing them from an author's
+name via OpenAlex's author-search was tried and rejected — searching
+"Ashish Vaswani" by name alone returns three different people with h-index
+29, 5, and 0; confidently attributing the wrong one's stats to a paper's
+real author is worse than not showing anything. Author details here always
+come from the *paper's own* OpenAlex authorship record, which disambiguates
+correctly — so brand-new papers (the common case for a "last 7 days"
+digest) usually show `details: None` ("ещё не проиндексировано") rather
+than a citation count of 0 or a guessed institution: OpenAlex has real
+ingestion lag from arXiv, and that lag is honestly surfaced, not hidden.
+
 ## MCP: tools this agent uses, and using this agent as a tool
 
 This agent is both an **MCP client** (it can call out to other MCP servers
@@ -451,7 +483,9 @@ running gets `409`, not a silent queue.
 Two tabs: **Исследование** (`research`/`ask`, described above) and
 **Дайджест: свежие статьи** — the `digest` CLI command's browse mode, with
 a topic field (optional — same `--query` as the CLI), day-window/limit/
-category controls, and a "без обзора тем" checkbox to skip the LLM summary.
+category controls, a "без обзора тем" checkbox to skip the LLM summary, and
+a "глубокий анализ" checkbox for the `--deep` per-paper analysis (Russian
+summary + OpenAlex citation/venue/author details, rendered per card).
 Same job+polling pattern (`POST /api/digest`,
 `GET /api/digest/{id}`), a separate `DigestJob`/`_digest_jobs` pair (no
 session/follow-up concept for a digest), but sharing the same

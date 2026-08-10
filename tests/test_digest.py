@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from src.agent import digest
-from src.sources.base import DiscoveredItem
 from src.sources.arxiv import ArxivSource
+from src.sources.base import DiscoveredItem
+from src.sources.citations import AuthorDetails, PaperDetails
 
 
 def _item(i: int) -> DiscoveredItem:
@@ -113,6 +114,75 @@ def test_run_digest_blank_query_becomes_none(monkeypatch):
     result = digest.run_digest(query="   ")
     assert captured["query"] is None
     assert result.query is None
+
+
+def test_run_digest_skips_analysis_by_default(monkeypatch):
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: [_item(1)])
+    monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
+
+    def _fail(item):
+        raise AssertionError("_summarize_item must not be called when deep=False")
+
+    monkeypatch.setattr(digest, "_summarize_item", _fail)
+
+    result = digest.run_digest()
+    assert result.analyses == {}
+
+
+def test_run_digest_deep_analyzes_each_item(monkeypatch):
+    items = [_item(1), _item(2)]
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: items)
+    monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
+    monkeypatch.setattr(digest, "_summarize_item", lambda item: f"резюме {item.title}")
+
+    details = PaperDetails(citation_count=5, venue="NeurIPS", authors=[AuthorDetails(name="A. Uthor")])
+    monkeypatch.setattr(digest, "lookup_paper_details", lambda title: details)
+
+    messages = []
+    result = digest.run_digest(deep=True, on_progress=messages.append)
+
+    assert set(result.analyses.keys()) == {"arxiv:1", "arxiv:2"}
+    assert result.analyses["arxiv:1"].summary_ru == "резюме Paper 1"
+    assert result.analyses["arxiv:1"].details is details
+    assert any("Анализируем статью 1/2" in m for m in messages)
+    assert any("Анализируем статью 2/2" in m for m in messages)
+
+
+def test_run_digest_deep_handles_unindexed_paper(monkeypatch):
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: [_item(1)])
+    monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
+    monkeypatch.setattr(digest, "_summarize_item", lambda item: "резюме")
+    monkeypatch.setattr(digest, "lookup_paper_details", lambda title: None)
+
+    result = digest.run_digest(deep=True)
+    assert result.analyses["arxiv:1"].details is None
+    assert result.analyses["arxiv:1"].summary_ru == "резюме"
+
+
+def test_run_digest_deep_caps_at_deep_max_items(monkeypatch):
+    monkeypatch.setattr(digest.config, "DIGEST_DEEP_MAX_ITEMS", 2)
+    items = [_item(i) for i in range(5)]
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit, query=None: items)
+    monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
+    monkeypatch.setattr(digest, "_summarize_item", lambda item: "резюме")
+    monkeypatch.setattr(digest, "lookup_paper_details", lambda title: None)
+
+    result = digest.run_digest(deep=True)
+    assert len(result.items) == 5  # список статей не урезан
+    assert len(result.analyses) == 2  # но проанализированы только первые DIGEST_DEEP_MAX_ITEMS
+
+
+def test_summarize_item_builds_prompt_from_title_and_abstract(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        digest.llm, "build_chat_prompt", lambda system, user: (captured.setdefault("user", user), "prompt")[1]
+    )
+    monkeypatch.setattr(digest.llm, "generate", lambda prompt, **kw: "  резюме статьи  ")
+
+    result = digest._summarize_item(_item(1))
+    assert result == "резюме статьи"
+    assert "Paper 1" in captured["user"]
+    assert "Abstract 1" in captured["user"]
 
 
 def test_summarize_builds_prompt_from_titles_and_abstracts(monkeypatch):

@@ -245,11 +245,12 @@ def cmd_digest(args: argparse.Namespace) -> None:
 
     result = run_digest(
         days=args.days, categories=args.categories or None, limit=args.limit,
-        summarize=not args.no_summary, query=args.query,
+        summarize=not args.no_summary, query=args.query, deep=args.deep,
+        on_progress=print if args.deep else None,  # --deep не быстрый - видно, что не зависло
     )
     scope = f" по «{result.query}»" if result.query else ""
     print(
-        f"Дайджест{scope}: {len(result.items)} статей за последние {result.days} дн. "
+        f"\nДайджест{scope}: {len(result.items)} статей за последние {result.days} дн. "
         f"в категориях {', '.join(result.categories)}\n"
     )
     if result.summary:
@@ -264,6 +265,21 @@ def cmd_digest(args: argparse.Namespace) -> None:
             print(f"    {authors_line}")
         published = (item.published_date or "")[:10]
         print(f"    {published}  {item.url}")
+
+        analysis = result.analyses.get(item.id)
+        if analysis is not None:
+            print(f"    Саммари: {analysis.summary_ru}")
+            details = analysis.details
+            if details is None:
+                print("    Метаданные: — (статья ещё не проиндексирована в OpenAlex)")
+            else:
+                cited = details.citation_count if details.citation_count is not None else "—"
+                venue = details.venue or "—"
+                print(f"    Цитирований: {cited}  ·  Venue: {venue}")
+                for author in details.authors:
+                    inst = author.institution or "—"
+                    h = author.h_index if author.h_index is not None else "—"
+                    print(f"      {author.name} — {inst}, h-index: {h}")
         print()
 
 
@@ -321,6 +337,11 @@ def main() -> None:
         help="Ограничить дайджест конкретной темой (свежее по теме, а не вообще всё)",
     )
     p_digest.add_argument("--no-summary", action="store_true", help="Не генерировать LLM-обзор тем")
+    p_digest.add_argument(
+        "--deep", action="store_true",
+        help=f"Глубокий анализ каждой статьи: русское саммари + цитируемость/venue/h-index "
+             f"авторов через OpenAlex (медленнее, лимит {config.DIGEST_DEEP_MAX_ITEMS} статей)",
+    )
     p_digest.set_defaults(func=cmd_digest)
 
     p_mcp_serve = sub.add_parser(
