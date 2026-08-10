@@ -207,6 +207,70 @@
     font-size: 14px;
   }
   .hidden { display: none; }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    padding: 8px 4px;
+    margin-right: 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  #digest-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 16px;
+    font-size: 14px;
+  }
+  #digest-form label { color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  #digest-form input[type="number"] {
+    width: 64px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+  }
+  .category-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 8px 0;
+    width: 100%;
+  }
+  .category-list label {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .category-list input { margin-right: 4px; }
+  #digest-summary {
+    white-space: pre-wrap;
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+  .digest-item { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .digest-item:last-child { border-bottom: none; }
+  .digest-item-title { font-weight: 600; font-size: 14px; }
+  .digest-item-title a { color: var(--text); text-decoration: none; }
+  .digest-item-title a:hover { color: var(--accent); text-decoration: underline; }
+  .digest-item-meta { color: var(--muted); font-size: 12px; margin: 2px 0 4px; }
+  .digest-item-abstract { font-size: 13px; color: var(--text); opacity: 0.85; }
 </style>
 </head>
 <body>
@@ -214,36 +278,68 @@
   <h1>local-research-agent</h1>
   <p class="subtitle">Deep-research: arXiv, Semantic Scholar, веб-поиск — локально, на MLX.</p>
 
-  <form id="form">
-    <textarea id="question" placeholder="Задайте вопрос для исследования…" required></textarea>
-    <button id="submit" type="submit">Спросить</button>
-  </form>
-
-  <div id="progress-panel" class="panel hidden">
-    <h2>Ход исследования</h2>
-    <ul id="progress-list"></ul>
+  <div class="tabs">
+    <button type="button" class="tab-btn active" id="tab-research">Исследование</button>
+    <button type="button" class="tab-btn" id="tab-digest">Дайджест: свежие статьи</button>
   </div>
 
-  <div id="error-panel" class="hidden">
-    <div class="error" id="error-text"></div>
+  <div id="research-section">
+    <form id="form">
+      <textarea id="question" placeholder="Задайте вопрос для исследования…" required></textarea>
+      <button id="submit" type="submit">Спросить</button>
+    </form>
+
+    <div id="progress-panel" class="panel hidden">
+      <h2>Ход исследования</h2>
+      <ul id="progress-list"></ul>
+    </div>
+
+    <div id="error-panel" class="hidden">
+      <div class="error" id="error-text"></div>
+    </div>
+
+    <div id="turns"></div>
+
+    <form id="followup-form" class="hidden">
+      <textarea id="followup-question" placeholder="Уточняющий вопрос по этому же диалогу…"></textarea>
+      <button id="followup-submit" type="submit">Уточнить</button>
+    </form>
+
+    <details id="candidates-panel" class="panel hidden">
+      <summary id="candidates-summary">Все найденные кандидаты</summary>
+      <table id="candidates-table">
+        <thead>
+          <tr><th></th><th>score</th><th>цитирований</th><th>источник</th><th>заголовок</th><th></th></tr>
+        </thead>
+        <tbody id="candidates-body"></tbody>
+      </table>
+    </details>
   </div>
 
-  <div id="turns"></div>
+  <div id="digest-section" class="hidden">
+    <form id="digest-form">
+      <label>За последние <input type="number" id="digest-days" value="7" min="1" max="90"> дн.</label>
+      <label>Показать <input type="number" id="digest-limit" value="20" min="1" max="100"> статей</label>
+      <label><input type="checkbox" id="digest-no-summary"> без обзора тем</label>
+      <button id="digest-submit" type="submit">Собрать дайджест</button>
+      <div class="category-list" id="digest-categories"></div>
+    </form>
 
-  <form id="followup-form" class="hidden">
-    <textarea id="followup-question" placeholder="Уточняющий вопрос по этому же диалогу…"></textarea>
-    <button id="followup-submit" type="submit">Уточнить</button>
-  </form>
+    <div id="digest-progress-panel" class="panel hidden">
+      <h2>Ход сбора</h2>
+      <ul id="digest-progress-list"></ul>
+    </div>
 
-  <details id="candidates-panel" class="panel hidden">
-    <summary id="candidates-summary">Все найденные кандидаты</summary>
-    <table id="candidates-table">
-      <thead>
-        <tr><th></th><th>score</th><th>цитирований</th><th>источник</th><th>заголовок</th><th></th></tr>
-      </thead>
-      <tbody id="candidates-body"></tbody>
-    </table>
-  </details>
+    <div id="digest-error-panel" class="hidden">
+      <div class="error" id="digest-error-text"></div>
+    </div>
+
+    <div id="digest-result" class="panel hidden">
+      <h2 id="digest-heading"></h2>
+      <div id="digest-summary" class="hidden"></div>
+      <div id="digest-items"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -526,6 +622,202 @@ followupForm.addEventListener("submit", (e) => {
   if (!question) return;
   followupQuestionEl.value = "";
   submitJob(`/api/sessions/${sessionId}/followup`, { question }, question);
+});
+
+// --- Вкладки: Исследование / Дайджест ---
+const tabResearch = document.getElementById("tab-research");
+const tabDigest = document.getElementById("tab-digest");
+const researchSection = document.getElementById("research-section");
+const digestSection = document.getElementById("digest-section");
+
+function selectTab(tab) {
+  const isDigest = tab === "digest";
+  tabDigest.classList.toggle("active", isDigest);
+  tabResearch.classList.toggle("active", !isDigest);
+  digestSection.classList.toggle("hidden", !isDigest);
+  researchSection.classList.toggle("hidden", isDigest);
+}
+tabResearch.addEventListener("click", () => selectTab("research"));
+tabDigest.addEventListener("click", () => selectTab("digest"));
+
+// --- Дайджест: свежие статьи по ИИ ---
+// Тот же набор, что и config.ARXIV_AI_CATEGORIES — статика не может прочитать
+// конфиг сервера напрямую, дублируем список здесь (единственное место в UI,
+// где это нужно).
+const ARXIV_AI_CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.NE", "stat.ML"];
+const digestCategoriesEl = document.getElementById("digest-categories");
+ARXIV_AI_CATEGORIES.forEach((cat) => {
+  const label = document.createElement("label");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.value = cat;
+  checkbox.checked = true;
+  label.appendChild(checkbox);
+  label.appendChild(document.createTextNode(cat));
+  digestCategoriesEl.appendChild(label);
+});
+
+const digestForm = document.getElementById("digest-form");
+const digestSubmitBtn = document.getElementById("digest-submit");
+const digestDaysEl = document.getElementById("digest-days");
+const digestLimitEl = document.getElementById("digest-limit");
+const digestNoSummaryEl = document.getElementById("digest-no-summary");
+const digestProgressPanel = document.getElementById("digest-progress-panel");
+const digestProgressList = document.getElementById("digest-progress-list");
+const digestErrorPanel = document.getElementById("digest-error-panel");
+const digestErrorText = document.getElementById("digest-error-text");
+const digestResultPanel = document.getElementById("digest-result");
+const digestHeading = document.getElementById("digest-heading");
+const digestSummaryEl = document.getElementById("digest-summary");
+const digestItemsEl = document.getElementById("digest-items");
+
+let digestPollTimer = null;
+let digestBusy = false;
+
+function setDigestBusy(value) {
+  digestBusy = value;
+  digestSubmitBtn.disabled = value;
+}
+
+function renderDigestProgress(messages, running) {
+  digestProgressList.innerHTML = "";
+  messages.forEach((msg, i) => {
+    const li = document.createElement("li");
+    li.textContent = msg;
+    if (i === messages.length - 1 && running) {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      li.prepend(spinner);
+    }
+    digestProgressList.appendChild(li);
+  });
+}
+
+function renderDigestError(message) {
+  digestProgressPanel.classList.add("hidden");
+  digestResultPanel.classList.add("hidden");
+  digestErrorPanel.classList.remove("hidden");
+  digestErrorText.textContent = "Ошибка: " + message;
+}
+
+function renderDigestResult(result) {
+  digestErrorPanel.classList.add("hidden");
+  digestHeading.textContent =
+    `${result.items.length} статей за последние ${result.days} дн. в категориях ${result.categories.join(", ")}`;
+
+  if (result.summary) {
+    digestSummaryEl.textContent = result.summary;
+    digestSummaryEl.classList.remove("hidden");
+  } else {
+    digestSummaryEl.classList.add("hidden");
+  }
+
+  digestItemsEl.innerHTML = "";
+  result.items.forEach((item) => {
+    const div = document.createElement("div");
+    div.className = "digest-item";
+
+    const title = document.createElement("div");
+    title.className = "digest-item-title";
+    if (item.url) {
+      const a = document.createElement("a");
+      a.href = item.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = item.title;
+      title.appendChild(a);
+    } else {
+      title.textContent = item.title;
+    }
+    div.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "digest-item-meta";
+    const authors = (item.authors || []).slice(0, 3).join(", ") + (item.authors.length > 3 ? " и др." : "");
+    const date = (item.published_date || "").slice(0, 10);
+    meta.textContent = [authors, date].filter(Boolean).join(" · ");
+    div.appendChild(meta);
+
+    const abstract = document.createElement("div");
+    abstract.className = "digest-item-abstract";
+    abstract.textContent = item.abstract;
+    div.appendChild(abstract);
+
+    digestItemsEl.appendChild(div);
+  });
+
+  digestResultPanel.classList.remove("hidden");
+}
+
+async function pollDigest(jobId) {
+  let resp;
+  try {
+    resp = await fetch(`/api/digest/${jobId}`);
+  } catch (e) {
+    digestPollTimer = setTimeout(() => pollDigest(jobId), 1500);
+    return;
+  }
+  if (!resp.ok) {
+    renderDigestError("не удалось получить статус запроса (" + resp.status + ")");
+    setDigestBusy(false);
+    return;
+  }
+  const data = await resp.json();
+  renderDigestProgress(data.progress, data.status === "running");
+
+  if (data.status === "running") {
+    digestPollTimer = setTimeout(() => pollDigest(jobId), 1000);
+  } else if (data.status === "done") {
+    digestProgressPanel.classList.add("hidden");
+    renderDigestResult(data.result);
+    setDigestBusy(false);
+  } else {
+    renderDigestError(data.error || "неизвестная ошибка");
+    setDigestBusy(false);
+  }
+}
+
+digestForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (digestBusy) return;
+  if (digestPollTimer) clearTimeout(digestPollTimer);
+
+  digestProgressPanel.classList.remove("hidden");
+  digestErrorPanel.classList.add("hidden");
+  digestResultPanel.classList.add("hidden");
+  digestProgressList.innerHTML = "";
+  setDigestBusy(true);
+
+  const checked = Array.from(digestCategoriesEl.querySelectorAll("input:checked")).map((el) => el.value);
+  const body = {
+    days: Number(digestDaysEl.value) || null,
+    limit: Number(digestLimitEl.value) || null,
+    categories: checked.length > 0 ? checked : null,
+    summarize: !digestNoSummaryEl.checked,
+  };
+
+  let resp;
+  try {
+    resp = await fetch("/api/digest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    renderDigestError("не удалось связаться с сервером");
+    setDigestBusy(false);
+    return;
+  }
+
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    renderDigestError(data.detail || ("ошибка запроса (" + resp.status + ")"));
+    setDigestBusy(false);
+    return;
+  }
+
+  const data = await resp.json();
+  pollDigest(data.job_id);
 });
 </script>
 </body>

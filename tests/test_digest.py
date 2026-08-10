@@ -73,6 +73,17 @@ def test_run_digest_skips_summary_when_no_items(monkeypatch):
     assert result.items == []
 
 
+def test_run_digest_reports_progress(monkeypatch):
+    monkeypatch.setattr(ArxivSource, "recent", lambda self, days, limit: [_item(1)])
+    monkeypatch.setattr(digest, "_summarize", lambda items: "summary")
+    messages = []
+
+    digest.run_digest(on_progress=messages.append)
+    assert any("Ищем статьи" in m for m in messages)
+    assert any("Найдено 1" in m for m in messages)
+    assert any("обзор" in m for m in messages)
+
+
 def test_summarize_builds_prompt_from_titles_and_abstracts(monkeypatch):
     captured = {}
     monkeypatch.setattr(digest.llm, "build_chat_prompt", lambda system, user: (captured.setdefault("user", user), "prompt")[1])

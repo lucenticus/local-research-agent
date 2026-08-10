@@ -15,6 +15,15 @@ Follow-up-вопросы ("уточни", "раскрой подробнее т�
 диалога создаёт сессию (`POST /api/jobs`), follow-up идёт в ту же сессию
 (`POST /api/sessions/{session_id}/followup`) — оба возвращают job_id и
 опрашиваются одинаково через `GET /api/jobs/{id}`.
+
+Digest (`POST /api/digest` + `GET /api/digest/{id}`) — тот же
+job+polling-паттерн, но своя, более простая пара `DigestJob`/`_digest_jobs`:
+нет сессии/диалога/follow-up (`agent/digest.py` не возвращает `state` для
+продолжения), значит незачем тащить сюда `Session`-обвязку `Job`. Общий с
+research()-джобами только `_current_job_id`-слот (`_require_free_slot`) —
+дайджест тоже дёргает резидентную LLM (для обзора тем), поэтому инвариант
+"не больше одного тяжёлого прогона одновременно" (§1 CLAUDE.md) действует
+на оба вида job'ов вместе, не по отдельности.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config
+from ..agent.digest import DigestResult, run_digest
 from ..agent.research_runner import ResearchResult, run_followup, run_research
 from ..agent.state import ResearchState
 from ..providers import tracing
@@ -64,8 +74,18 @@ class Session:
     state: ResearchState | None = None  # заполняется после первого завершённого хода
 
 
+@dataclass
+class DigestJob:
+    id: str
+    status: Literal["running", "done", "error"] = "running"
+    progress: list[str] = field(default_factory=list)
+    result: DigestResult | None = None
+    error: str | None = None
+
+
 _jobs: dict[str, Job] = {}
 _sessions: dict[str, Session] = {}
+_digest_jobs: dict[str, DigestJob] = {}
 _jobs_lock = threading.Lock()
 _current_job_id: str | None = None
 
@@ -77,6 +97,13 @@ class ResearchRequest(BaseModel):
 class FollowupRequest(BaseModel):
     question: str
     focus_candidate_id: str | None = None
+
+
+class DigestRequest(BaseModel):
+    days: int | None = None
+    categories: list[str] | None = None
+    limit: int | None = None
+    summarize: bool | None = None
 
 
 def _job_to_dict(job: Job) -> dict[str, Any]:
@@ -115,6 +142,54 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
     }
 
 
+def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "progress": list(job.progress),
+        "result": None
+        if job.result is None
+        else {
+            "days": job.result.days,
+            "categories": job.result.categories,
+            "summary": job.result.summary,
+            "items": [
+                {
+                    "title": item.title,
+                    "abstract": item.abstract,
+                    "url": item.url,
+                    "published_date": item.published_date,
+                    "authors": item.meta.get("authors") or [],
+                }
+                for item in job.result.items
+            ],
+        },
+        "error": job.error,
+    }
+
+
+def _run_digest_job(job: DigestJob, days: int | None, categories: list[str] | None,
+                     limit: int | None, summarize: bool | None) -> None:
+    global _current_job_id
+    try:
+        def on_progress(message: str) -> None:
+            with _jobs_lock:
+                job.progress.append(message)
+
+        result = run_digest(days=days, categories=categories, limit=limit,
+                             summarize=summarize, on_progress=on_progress)
+        with _jobs_lock:
+            job.result = result
+            job.status = "done"
+    except Exception as exc:
+        with _jobs_lock:
+            job.error = str(exc)
+            job.status = "error"
+    finally:
+        with _jobs_lock:
+            _current_job_id = None
+
+
 def _run_job(job: Job, session: Session, run: Any) -> None:
     """`run` — `lambda on_progress: run_research(...)` либо
     `lambda on_progress: run_followup(...)`, оба возвращают `ResearchResult`
@@ -146,14 +221,19 @@ def _require_question(raw: str) -> str:
     return question
 
 
-def _claim_job_slot(session_id: str, question: str) -> Job:
+def _require_free_slot() -> None:
     """Вызывается уже под `_jobs_lock`. Держит инвариант "не больше одного
-    research()-прогона одновременно" (§1 CLAUDE.md — нельзя грузить/держать
-    несколько тяжёлых моделей параллельно): если слот занят — 409 и ничего
-    не регистрируется; иначе заводит `Job` и сразу же занимает слот им."""
-    global _current_job_id
+    тяжёлого прогона одновременно" (§1 CLAUDE.md — нельзя грузить/держать
+    несколько тяжёлых моделей параллельно): общий для research()-джобов и
+    digest-джобов, оба используют резидентную LLM."""
     if _current_job_id is not None:
-        raise HTTPException(409, "Уже выполняется другой research-запрос — дождитесь его завершения")
+        raise HTTPException(409, "Уже выполняется другой запрос — дождитесь его завершения")
+
+
+def _claim_job_slot(session_id: str, question: str) -> Job:
+    """Вызывается уже под `_jobs_lock`, после `_require_free_slot()` —
+    заводит `Job` и сразу же занимает слот им."""
+    global _current_job_id
     job = Job(id=str(uuid.uuid4()), session_id=session_id, question=question)
     _jobs[job.id] = job
     _current_job_id = job.id
@@ -170,6 +250,7 @@ def create_job(payload: ResearchRequest) -> dict[str, Any]:
     question = _require_question(payload.question)
 
     with _jobs_lock:
+        _require_free_slot()
         session_id = str(uuid.uuid4())
         job = _claim_job_slot(session_id, question)
         # Отдельная таблица от `ask`/`index` — см. config.RESEARCH_INDEX_TABLE.
@@ -193,6 +274,7 @@ def create_followup(session_id: str, payload: FollowupRequest) -> dict[str, Any]
             raise HTTPException(404, "Неизвестная сессия — сначала задайте исходный вопрос")
         if session.state is None:
             raise HTTPException(409, "Исходный запрос этой сессии ещё не завершён")
+        _require_free_slot()
         job = _claim_job_slot(session_id, question)
 
     run = lambda on_progress: run_followup(
@@ -210,3 +292,29 @@ def get_job(job_id: str) -> dict[str, Any]:
         if job is None:
             raise HTTPException(404, "Неизвестный job_id")
         return _job_to_dict(job)
+
+
+@app.post("/api/digest")
+def create_digest(payload: DigestRequest) -> dict[str, Any]:
+    global _current_job_id
+    with _jobs_lock:
+        _require_free_slot()
+        job = DigestJob(id=str(uuid.uuid4()))
+        _digest_jobs[job.id] = job
+        _current_job_id = job.id
+
+    threading.Thread(
+        target=_run_digest_job,
+        args=(job, payload.days, payload.categories, payload.limit, payload.summarize),
+        daemon=True,
+    ).start()
+    return {"job_id": job.id}
+
+
+@app.get("/api/digest/{job_id}")
+def get_digest(job_id: str) -> dict[str, Any]:
+    with _jobs_lock:
+        job = _digest_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "Неизвестный job_id")
+        return _digest_job_to_dict(job)

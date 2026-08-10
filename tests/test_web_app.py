@@ -10,8 +10,10 @@ import time
 
 from fastapi.testclient import TestClient
 
+from src.agent.digest import DigestResult
 from src.agent.research_runner import CandidateSummary, ResearchResult, SourceRef
 from src.agent.state import ResearchState
+from src.sources.base import DiscoveredItem
 from src.web import app as app_module
 
 
@@ -25,9 +27,20 @@ def _wait_until_done(client: TestClient, job_id: str, timeout: float = 5.0) -> d
     raise AssertionError("job did not finish in time")
 
 
+def _wait_until_digest_done(client: TestClient, job_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = client.get(f"/api/digest/{job_id}").json()
+        if data["status"] != "running":
+            return data
+        time.sleep(0.02)
+    raise AssertionError("digest job did not finish in time")
+
+
 def _reset_app_state(monkeypatch):
     monkeypatch.setattr(app_module, "_jobs", {})
     monkeypatch.setattr(app_module, "_sessions", {})
+    monkeypatch.setattr(app_module, "_digest_jobs", {})
     monkeypatch.setattr(app_module, "_current_job_id", None)
 
 
@@ -200,3 +213,91 @@ def test_job_reports_error_status_on_exception(monkeypatch):
     data = _wait_until_done(client, job_id)
     assert data["status"] == "error"
     assert "something broke" in data["error"]
+
+
+def test_get_unknown_digest_returns_404(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    resp = client.get("/api/digest/does-not-exist")
+    assert resp.status_code == 404
+
+
+def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
+    _reset_app_state(monkeypatch)
+
+    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, on_progress=None):
+        if on_progress:
+            on_progress("Ищем статьи…")
+        item = DiscoveredItem(
+            id="arxiv:1", source="arxiv", title="Paper", abstract="Abstract",
+            url="https://arxiv.org/abs/1", published_date="2026-08-07T00:00:00Z",
+            meta={"authors": ["A. Uthor"]},
+        )
+        return DigestResult(items=[item], days=7, categories=["cs.AI"], summary="Overview.")
+
+    monkeypatch.setattr(app_module, "run_digest", fake_run_digest)
+
+    client = TestClient(app_module.app)
+    create_resp = client.post("/api/digest", json={"days": 7})
+    assert create_resp.status_code == 200
+    job_id = create_resp.json()["job_id"]
+
+    data = _wait_until_digest_done(client, job_id)
+    assert data["status"] == "done"
+    assert "Ищем статьи…" in data["progress"]
+    assert data["result"]["summary"] == "Overview."
+    assert data["result"]["days"] == 7
+    assert data["result"]["categories"] == ["cs.AI"]
+    assert data["result"]["items"] == [
+        {
+            "title": "Paper", "abstract": "Abstract", "url": "https://arxiv.org/abs/1",
+            "published_date": "2026-08-07T00:00:00Z", "authors": ["A. Uthor"],
+        }
+    ]
+
+
+def test_digest_job_reports_error_status_on_exception(monkeypatch):
+    _reset_app_state(monkeypatch)
+
+    def fake_run_digest(**kwargs):
+        raise RuntimeError("arxiv is down")
+
+    monkeypatch.setattr(app_module, "run_digest", fake_run_digest)
+
+    client = TestClient(app_module.app)
+    job_id = client.post("/api/digest", json={}).json()["job_id"]
+
+    data = _wait_until_digest_done(client, job_id)
+    assert data["status"] == "error"
+    assert "arxiv is down" in data["error"]
+
+
+def test_digest_shares_the_same_concurrency_slot_as_research(monkeypatch):
+    """Дайджест тоже дёргает резидентную LLM (обзор тем) — инвариант
+    "не больше одного тяжёлого прогона одновременно" общий с research()."""
+    _reset_app_state(monkeypatch)
+
+    started = __import__("threading").Event()
+    release = __import__("threading").Event()
+
+    def fake_run_research(question, store, on_progress=None):
+        started.set()
+        release.wait(timeout=5.0)
+        return ResearchResult(
+            answer="ok", sources=[], candidates=[], gaps=[], iterations=1, read_count=0,
+            candidates_count=0,
+        )
+
+    monkeypatch.setattr(app_module, "run_research", fake_run_research)
+    monkeypatch.setattr(app_module, "QdrantStore", lambda collection_name=None: object())
+
+    client = TestClient(app_module.app)
+    first = client.post("/api/jobs", json={"question": "first question"})
+    assert first.status_code == 200
+    started.wait(timeout=5.0)
+
+    digest_resp = client.post("/api/digest", json={})
+    assert digest_resp.status_code == 409
+
+    release.set()
+    _wait_until_done(client, first.json()["job_id"])

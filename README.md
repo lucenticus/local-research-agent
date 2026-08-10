@@ -295,7 +295,8 @@ answer, the conversation keeps going and reuses the same `ResearchState`
 browse, not Q&A: "what got published in the last N days" across
 `config.ARXIV_AI_CATEGORIES` (cs.AI/cs.LG/cs.CL/cs.CV/cs.NE/stat.ML by
 default), sorted by submission date, no relevance filtering against a
-question because there isn't one.
+question because there isn't one. Available both as a CLI command and as
+the "Дайджест: свежие статьи" tab in the web UI (see below).
 
 ```bash
 python -m src.cli digest                              # last 7 days, default categories
@@ -442,6 +443,16 @@ second rather than using SSE/WebSockets — unnecessary complexity for a
 single local user. Only one job runs at a time (loading multiple heavy
 models concurrently isn't safe on 16GB) — a second request while one is
 running gets `409`, not a silent queue.
+
+Two tabs: **Исследование** (`research`/`ask`, described above) and
+**Дайджест: свежие статьи** — the `digest` CLI command's browse mode, with
+day-window/limit/category controls and a "без обзора тем" checkbox to skip
+the LLM summary. Same job+polling pattern (`POST /api/digest`,
+`GET /api/digest/{id}`), a separate `DigestJob`/`_digest_jobs` pair (no
+session/follow-up concept for a digest), but sharing the same
+`_current_job_id` concurrency slot as research jobs — digest also calls the
+resident LLM for its overview, so the "one heavy job at a time" invariant
+covers both.
 
 ## Tracing: LangSmith
 

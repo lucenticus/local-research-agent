@@ -25,6 +25,7 @@ from .. import config
 from ..providers import llm
 from ..sources.arxiv import ArxivSource
 from ..sources.base import DiscoveredItem
+from .progress import ProgressCallback, emit as _emit
 
 
 @dataclass
@@ -55,12 +56,18 @@ def run_digest(
     categories: list[str] | None = None,
     limit: int | None = None,
     summarize: bool | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> DigestResult:
     days = config.DIGEST_DEFAULT_DAYS if days is None else days
     categories = categories or config.ARXIV_AI_CATEGORIES
     limit = config.DIGEST_DEFAULT_LIMIT if limit is None else limit
     summarize = config.DIGEST_SUMMARIZE if summarize is None else summarize
 
+    _emit(on_progress, f"Ищем статьи за последние {days} дн. в {', '.join(categories)}…")
     items = ArxivSource(categories=categories).recent(days=days, limit=limit)
-    summary = _summarize(items) if summarize and items else None
+    _emit(on_progress, f"Найдено {len(items)}.")
+    summary = None
+    if summarize and items:
+        _emit(on_progress, "Собираем обзор тем…")
+        summary = _summarize(items)
     return DigestResult(items=items, days=days, categories=categories, summary=summary)
