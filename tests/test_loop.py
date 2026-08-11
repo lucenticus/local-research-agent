@@ -241,8 +241,8 @@ def test_loop_reports_progress_messages(monkeypatch):
         on_progress=messages.append,
     )
 
-    assert any("Подвопросов" in m for m in messages)
-    assert any("Синтезируем" in m for m in messages)
+    assert any("Subquestions" in m for m in messages)
+    assert any("Synthesizing" in m for m in messages)
 
 
 def test_loop_without_on_progress_does_not_raise(monkeypatch):

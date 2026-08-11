@@ -106,14 +106,14 @@ def cmd_index(args: argparse.Namespace) -> None:
             all_chunks.extend(_chunks_from_sections(sections, source_id=file_path, source_title=title))
 
     store.rebuild(all_chunks)
-    print(f"Индекс построен: {len(all_chunks)} чанков из {corpus_dir}"
-          + (f" + {len(args.mcp_dirs)} MCP-директори{'й' if len(args.mcp_dirs) != 1 else 'и'}" if args.mcp_dirs else ""))
+    print(f"Index built: {len(all_chunks)} chunks from {corpus_dir}"
+          + (f" + {len(args.mcp_dirs)} MCP director{'ies' if len(args.mcp_dirs) != 1 else 'y'}" if args.mcp_dirs else ""))
 
 
 def _format_source_line(index: int, title: str, url: str = "", citation_count: int | None = None) -> str:
     line = f"[{index}] {title}"
     if citation_count is not None:
-        line += f" (цитирований: {citation_count})"
+        line += f" (citations: {citation_count})"
     if url:
         # Голый URL на отдельной строке — большинство терминалов сами
         # превращают его в кликабельную ссылку, без доп. разметки.
@@ -123,7 +123,7 @@ def _format_source_line(index: int, title: str, url: str = "", citation_count: i
 
 def _print_gaps(gaps: list[str] | None) -> None:
     if gaps:
-        print("\nНепокрытые вопросы (бюджет исследования исчерпан):")
+        print("\nUncovered subquestions (research budget exhausted):")
         for gap in gaps:
             print(f"  - {gap}")
 
@@ -131,7 +131,7 @@ def _print_gaps(gaps: list[str] | None) -> None:
 def _print_answer(question: str, hits: list[dict], gaps: list[str] | None = None) -> None:
     answer = synthesize(question, hits, gaps=gaps)
     print(answer)
-    print("\nИсточники:")
+    print("\nSources:")
     seen: set[str] = set()
     i = 0
     for hit in hits:
@@ -159,7 +159,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
 def _print_research_result(result: ResearchResult) -> None:
     print()
     print(result.answer)
-    print("\nИсточники:")
+    print("\nSources:")
     for i, source in enumerate(result.sources, start=1):
         print(_format_source_line(i, source.title, url=source.url, citation_count=source.citation_count))
     _print_gaps(result.gaps)
@@ -167,16 +167,16 @@ def _print_research_result(result: ResearchResult) -> None:
     if result.candidates:
         # Номер в списке — то, что пользователь вводит в "подробнее N", чтобы
         # раскрыть подробнее конкретную найденную тему (см. cmd_research).
-        print("\nВсе найденные кандидаты (как агент сузил поиск):")
+        print("\nAll discovered candidates (how the agent narrowed the search):")
         for i, c in enumerate(result.candidates, start=1):
-            mark = "✓ прочитан" if c.read else "  найден"
+            mark = "✓ read" if c.read else "  found"
             score = f"score={c.triage_score:.3f}" if c.triage_score is not None else "score=—"
-            citation = f", цитирований={c.citation_count}" if c.citation_count is not None else ""
+            citation = f", citations={c.citation_count}" if c.citation_count is not None else ""
             print(f"  [{i}] [{mark}] {score}{citation} ({c.source}) {c.title}")
 
     print(
-        f"\n[итераций: {result.iterations}, прочитано источников: {result.read_count}, "
-        f"найдено кандидатов: {result.candidates_count}]"
+        f"\n[iterations: {result.iterations}, sources read: {result.read_count}, "
+        f"candidates found: {result.candidates_count}]"
     )
 
 
@@ -200,8 +200,8 @@ def cmd_research(args: argparse.Namespace) -> None:
     _print_research_result(result)
 
     print(
-        "\nМожно задать уточняющий вопрос, написать «подробнее N» — раскрыть "
-        "тему N из списка кандидатов, или просто нажать Enter, чтобы выйти."
+        "\nAsk a follow-up question, type 'more N' to expand candidate N from the "
+        "list above, or just press Enter to exit."
     )
     while True:
         try:
@@ -220,9 +220,9 @@ def cmd_research(args: argparse.Namespace) -> None:
             try:
                 candidate = result.candidates[int(arg.strip()) - 1]
             except (ValueError, IndexError):
-                print(f"Не понял номер — используйте «подробнее N» с номером из списка (1-{len(result.candidates)}).")
+                print(f"Could not parse the number — use 'more N' with a number from the list (1-{len(result.candidates)}).")
                 continue
-            message = f"Расскажи подробнее об источнике: {candidate.title}"
+            message = f"Tell me more about this source: {candidate.title}"
             focus_candidate_id = candidate.id
 
         result = run_followup(
@@ -248,18 +248,18 @@ def cmd_digest(args: argparse.Namespace) -> None:
         summarize=not args.no_summary, query=args.query, deep=args.deep,
         on_progress=print if args.deep else None,  # --deep не быстрый - видно, что не зависло
     )
-    scope = f" по «{result.query}»" if result.query else ""
+    scope = f" on '{result.query}'" if result.query else ""
     print(
-        f"\nДайджест{scope}: {len(result.items)} статей за последние {result.days} дн. "
-        f"в категориях {', '.join(result.categories)}\n"
+        f"\nDigest{scope}: {len(result.items)} papers from the last {result.days} days "
+        f"in {', '.join(result.categories)}\n"
     )
     if result.summary:
-        print("Обзор тем (сгенерирован моделью, не факт с источником):")
+        print("Topic overview (model-generated, not a sourced fact):")
         print(result.summary)
         print()
     for i, item in enumerate(result.items, start=1):
         authors = item.meta.get("authors") or []
-        authors_line = ", ".join(authors[:3]) + (" и др." if len(authors) > 3 else "")
+        authors_line = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
         print(f"[{i}] {item.title}")
         if authors_line:
             print(f"    {authors_line}")
@@ -268,14 +268,14 @@ def cmd_digest(args: argparse.Namespace) -> None:
 
         analysis = result.analyses.get(item.id)
         if analysis is not None:
-            print(f"    Саммари: {analysis.summary_ru}")
+            print(f"    Summary: {analysis.summary_ru}")
             details = analysis.details
             if details is None:
-                print("    Метаданные: — (статья ещё не проиндексирована в OpenAlex)")
+                print("    Metadata: — (not indexed in OpenAlex yet)")
             else:
                 cited = details.citation_count if details.citation_count is not None else "—"
                 venue = details.venue or "—"
-                print(f"    Цитирований: {cited}  ·  Venue: {venue}")
+                print(f"    Citations: {cited}  ·  Venue: {venue}")
                 for author in details.authors:
                     inst = author.institution or "—"
                     h = author.h_index if author.h_index is not None else "—"
@@ -283,23 +283,23 @@ def cmd_digest(args: argparse.Namespace) -> None:
 
             insights = analysis.insights
             if insights is None:
-                print("    Разбор PDF: — (не удалось скачать или разобрать)")
+                print("    PDF analysis: — (could not download or parse)")
             else:
-                print(f"    Разбор PDF (секции: {', '.join(insights.sections_used) or '—'}):")
+                print(f"    PDF analysis (sections: {', '.join(insights.sections_used) or '—'}):")
                 for line in insights.findings_ru.splitlines():
                     print(f"      {line}" if line.strip() else "")
                 if insights.authors:
-                    print("    Авторы и аффилиации (из PDF):")
+                    print("    Authors and affiliations (from the PDF):")
                     for author in insights.authors:
                         print(f"      {author.name} — {author.affiliation or '—'}")
                 if insights.code_links:
-                    print("    Код и модели:")
+                    print("    Code and models:")
                     for link in insights.code_links:
                         # stars=0 — реальный ноль, None — не смогли узнать
                         stars = f"  ★ {link.stars}" if link.stars is not None else ""
                         print(f"      [{link.kind}] {link.url}{stars}")
                 else:
-                    print("    Код и модели: — (ссылок в PDF не нашлось)")
+                    print("    Code and models: — (no links found in the PDF)")
         print()
 
 
@@ -317,62 +317,62 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="research-agent")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_index = sub.add_parser("index", help="Построить индекс из corpus/")
+    p_index = sub.add_parser("index", help="Build the index from corpus/")
     p_index.add_argument(
         "--corpus-dir", default=str(config.CORPUS_DIR), dest="corpus_dir"
     )
     p_index.add_argument(
         "--mcp-dir", action="append", default=[], dest="mcp_dirs",
-        help="Дополнительная директория (любая на диске) — читается через MCP "
+        help="Extra directory (anywhere on disk), read through the MCP "
              "filesystem-сервер (npx), не только corpus/. Можно указать несколько раз.",
     )
     p_index.set_defaults(func=cmd_index)
 
-    p_ask = sub.add_parser("ask", help="Задать вопрос по индексу")
+    p_ask = sub.add_parser("ask", help="Ask a question against the index")
     p_ask.add_argument("question")
     p_ask.set_defaults(func=cmd_ask)
 
     p_research = sub.add_parser(
-        "research", help="Deep-research: воронка + итеративный цикл поверх внешних источников"
+        "research", help="Deep research: funnel + iterative loop over external sources"
     )
     p_research.add_argument("question")
     p_research.set_defaults(func=cmd_research)
 
-    p_serve = sub.add_parser("serve", help="Запустить веб-интерфейс (research)")
+    p_serve = sub.add_parser("serve", help="Start the web UI")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.set_defaults(func=cmd_serve)
 
     p_digest = sub.add_parser(
-        "digest", help="Дайджест свежих статей по ИИ за последние N дней (browse по arXiv, не Q&A)"
+        "digest", help="Digest of fresh AI papers from the last N days (browse arXiv, not Q&A)"
     )
-    p_digest.add_argument("--days", type=int, default=None, help=f"По умолчанию {config.DIGEST_DEFAULT_DAYS}")
+    p_digest.add_argument("--days", type=int, default=None, help=f"Default: {config.DIGEST_DEFAULT_DAYS}")
     p_digest.add_argument(
         "--category", action="append", dest="categories", default=[],
-        help=f"arXiv-категория, можно несколько раз (по умолчанию {config.ARXIV_AI_CATEGORIES})",
+        help=f"arXiv category, repeatable (default: {config.ARXIV_AI_CATEGORIES})",
     )
     p_digest.add_argument(
         "--limit", type=int, default=None,
-        help=f"По умолчанию {config.DIGEST_DEFAULT_LIMIT}. Игнорируется при --query — "
-        f"там показывается топ {config.DIGEST_QUERY_TOP_K} самых релевантных",
+        help=f"Default: {config.DIGEST_DEFAULT_LIMIT}. Ignored with --query, which always "
+        f"shows the top {config.DIGEST_QUERY_TOP_K} by relevance",
     )
     p_digest.add_argument(
         "--query", default=None,
-        help=f"Топ-{config.DIGEST_QUERY_TOP_K} самых релевантных теме статей за период "
-        f"(ранжируется локально по расширенному пулу, не через arXiv-запрос)",
+        help=f"Top {config.DIGEST_QUERY_TOP_K} papers most relevant to a topic in the period "
+        f"(ranked locally over the whole window, not via the arXiv query)",
     )
-    p_digest.add_argument("--no-summary", action="store_true", help="Не генерировать LLM-обзор тем")
+    p_digest.add_argument("--no-summary", action="store_true", help="Skip the LLM topic overview")
     p_digest.add_argument(
         "--deep", action="store_true",
-        help=f"Глубокий анализ каждой статьи: русское саммари, разбор PDF (результаты, "
-             f"сравнения, авторы с аффилиациями, ссылки на код со звёздами GitHub) и "
-             f"цитируемость/venue/h-index через OpenAlex (медленнее, лимит "
-             f"{config.DIGEST_DEEP_MAX_ITEMS} статей)",
+        help=f"Per-paper deep analysis: summary, PDF breakdown (results, comparisons, "
+             f"authors with affiliations, code links with GitHub stars) and "
+             f"citations/venue/h-index from OpenAlex (slower, capped at "
+             f"{config.DIGEST_DEEP_MAX_ITEMS} papers)",
     )
     p_digest.set_defaults(func=cmd_digest)
 
     p_mcp_serve = sub.add_parser(
-        "mcp-serve", help="Запустить MCP-сервер (stdio) — ask/research как MCP-инструменты"
+        "mcp-serve", help="Start the MCP server (stdio) — ask/research as MCP tools"
     )
     p_mcp_serve.set_defaults(func=cmd_mcp_serve)
 

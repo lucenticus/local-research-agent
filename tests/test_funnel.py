@@ -185,8 +185,8 @@ def test_run_reports_progress_messages(monkeypatch):
 
     funnel.run(sq, [source], state, store, on_progress=messages.append)
 
-    assert any("Ищем источники" in m for m in messages)
-    assert any("Найдено" in m for m in messages)
+    assert any("Searching sources" in m for m in messages)
+    assert any("Found" in m for m in messages)
     assert any("Cats paper" in m for m in messages)
 
 

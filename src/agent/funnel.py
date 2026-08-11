@@ -277,7 +277,7 @@ def deep_read_candidate(
 
     already_indexed = store.has_source(candidate.id)
     if not already_indexed:
-        _emit(on_progress, f"Читаем: {candidate.title[:80]}…")
+        _emit(on_progress, f"Reading: {candidate.title[:80]}…")
         sections = _deep_read_sections(candidate)
         raw_chunks = chunk_sections(sections) or chunk_text(candidate.abstract)
         if raw_chunks:
@@ -305,7 +305,7 @@ def deep_read_candidate(
                 ]
             )
     else:
-        _emit(on_progress, f"Уже в индексе (кэш): {candidate.title[:80]}")
+        _emit(on_progress, f"Already indexed (cache hit): {candidate.title[:80]}")
 
     state.mark_read(candidate.id)
 
@@ -324,13 +324,13 @@ def run(
     так повторный проход реально достаёт статьи, которых не было в первой
     (более узкой) выдаче, а не просто повторяет тот же самый запрос.
     """
-    _emit(on_progress, f"Ищем источники: «{sub_question.text}»…")
+    _emit(on_progress, f"Searching sources for: {sub_question.text}…")
     discovered = _discover(sub_question, sources, discovery_limit or config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE)
     new_candidates = state.add_candidates(discovered)
     survivors = _triage(sub_question, new_candidates)
     _emit(
         on_progress,
-        f"Найдено {len(discovered)} кандидатов, {len(survivors)} прошли триаж.",
+        f"Found {len(discovered)} candidates, {len(survivors)} passed triage.",
     )
 
     for candidate in survivors:

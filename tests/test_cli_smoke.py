@@ -43,7 +43,7 @@ def test_index_and_ask_smoke(tmp_path, monkeypatch, capsys):
 
     cli.cmd_index(argparse.Namespace(corpus_dir=str(corpus_dir), mcp_dirs=[]))
     index_out = capsys.readouterr().out
-    assert "Индекс построен: 1 чанков" in index_out
+    assert "Index built: 1 chunks" in index_out
 
     cli.cmd_ask(argparse.Namespace(question="Кто такой кит?"))
     ask_out = capsys.readouterr().out
@@ -86,5 +86,5 @@ def test_index_pulls_extra_docs_via_mcp_filesystem_server(tmp_path, monkeypatch,
 
     cli.cmd_index(argparse.Namespace(corpus_dir=str(corpus_dir), mcp_dirs=["/notes"]))
     out = capsys.readouterr().out
-    assert "Индекс построен: 1 чанков" in out
-    assert "1 MCP-директории" in out
+    assert "Index built: 1 chunks" in out
+    assert "1 MCP directory" in out

@@ -70,7 +70,7 @@ resident at once. LangChain wrappers (`langchain_llm.py`,
 second copies.
 
 **The honesty invariant**: when a fact isn't available, the agent says so
-instead of guessing. Missing OpenAlex record → "не проиндексировано", not
+instead of guessing. Missing OpenAlex record → "not indexed yet", not
 `0` citations. No affiliation in the PDF → a dash, not a plausible
 university. GitHub API rate-limited → no star count, not `0` stars.
 
@@ -122,9 +122,9 @@ not traded off: a brand-new paper structurally can't have citations yet, so
 citation boost alone would bury exactly what "what's new" needs.
 
 **Follow-ups.** After the first answer the conversation continues on the same
-`ResearchState` — the CLI drops into a prompt (`подробнее N` / `more N`
-forces a deep read of candidate N), the web UI shows a "Уточнить" box and a
-"подробнее" button per candidate. Prior reads, embeddings and Qdrant rows are
+`ResearchState` — the CLI drops into a prompt (`more N` forces a deep read
+of candidate N), the web UI shows a follow-up box and a "details" button per
+candidate. Prior reads, embeddings and Qdrant rows are
 reused; only the new subquestions get budget.
 
 **Visibility.** Both UIs keep the progress log next to the answer and a table
@@ -154,39 +154,32 @@ answer).
 
 ### With `--query`: top-5 most relevant
 
-Ranking happens **locally**, in three stages, because the obvious approach
-didn't survive contact with reality:
+Ranked locally, in three stages:
 
-1. **Fetch the whole window.** All papers for the period, paginated
-   (~2100 for 7 days across the default categories). Keywords are *not*
-   AND'd into the arXiv query — that combination (keywords + six categories
-   OR'd) timed out on real queries. Category-only is cheap and predictable.
-2. **Hybrid search** narrows the pool to `DIGEST_QUERY_HYBRID_K` (20) using
-   the same dense+sparse retrieval as `ask`/`research`.
-3. **Rerank** those 20 down to `DIGEST_QUERY_TOP_K` (5).
+1. **Fetch the whole window** — every paper of the period, paginated (~2100
+   for 7 days). The topic never goes into the arXiv query: keywords AND'd
+   with six OR'd categories timed out in practice.
+2. **Hybrid search** cuts the pool to `DIGEST_QUERY_HYBRID_K` (20).
+3. **Rerank** cuts those to `DIGEST_QUERY_TOP_K` (5).
 
-Reranking the full pool directly would take tens of minutes — the reranker is
-sequential, one forward pass per paper (~0.15s), while embedding the same
-pool in batches is far cheaper.
+Reranking the whole pool would take tens of minutes — it is sequential, one
+forward pass per paper.
 
-**Pool caching.** The window is cached in its own Qdrant collection
-(`digest_pool`) — both the embeddings and the paper metadata. A repeat query
-restores the pool from the index and asks arXiv only for papers published
-since last time: results are date-descending, so the first fully-known page
-means "caught up". In practice this is one request instead of ~22 (0.5s
-instead of 82s). Early stopping is only allowed when the cache provably
-reaches past the window's far edge — otherwise (first run, or a widened
-`--days`) the window is fetched in full.
+**Pool caching.** The window lives in its own Qdrant collection
+(`digest_pool`), metadata included. A repeat query restores it from the index
+and asks arXiv only for papers newer than the cache — one request instead of
+~22, 0.5s instead of 82s. Full refetch when the cache doesn't reach the far
+edge of the window (first run, or a widened `--days`).
 
 ### `--deep` — per-paper analysis
 
 Capped at `DIGEST_DEEP_MAX_ITEMS` regardless of `--limit`; ~30s per paper.
-In the web UI it's a **"Детальный анализ" button on each card** with its own
+In the web UI it's a **"Detailed analysis" button on each card** with its own
 progress, rather than something applied to the whole digest at once.
 
 Per paper:
 
-- **Russian summary** — bounded LLM call on title + abstract.
+- **Short summary** — bounded LLM call on title + abstract.
 - **PDF analysis** (`DIGEST_PDF_ANALYSIS`) — the full text is fetched
   (`sources/pdf.py`), split into sections, and the results/discussion/
   conclusion are fed to a bounded LLM call under a hard context cap
@@ -198,28 +191,20 @@ Per paper:
 - **Citations, venue, author h-index** — from OpenAlex
   (`sources/citations.py`), batched into one request per paper.
 
-Failures are surfaced, not hidden: no PDF → "не удалось разобрать"; no
-OpenAlex record (usual for week-old preprints) → "ещё не проиндексировано".
+Failures are surfaced, not hidden: no PDF → "could not parse"; no OpenAlex
+record (usual for week-old preprints) → "not indexed yet".
 
-**Where the data comes from matters here**, and three decisions are load-bearing:
+Two rules keep this trustworthy:
 
-- **Affiliations come from the PDF, never from a name lookup.** arXiv's API
-  doesn't expose affiliations at all, and OpenAlex hasn't indexed fresh
-  preprints. Guessing via OpenAlex author-search was tried and rejected:
-  searching "Ashish Vaswani" returns three different people with h-index 29,
-  5 and 0. The PDF header has the real thing, so the LLM is used there only
-  as a *parser* of text that already contains the answer — not as a source of
-  knowledge. (Prompting needed worked examples: on a bare instruction the 4B
-  model kept dropping a shared affiliation printed below the author list.)
-  When an author genuinely has no affiliation in the paper, the output is a
-  dash.
-- **Links are extracted deterministically**, from PDF link annotations plus a
-  text regex — never from the LLM. A plausible-but-invented repository URL is
-  exactly the failure mode this project refuses. Links to *other people's*
-  PRs and commits are filtered out: a benchmark paper cites dozens of them as
-  its dataset, and they are not the paper's own code.
-- **`0` and "unknown" stay distinct** everywhere — a brand-new repo with 0
-  stars and a rate-limited API are different facts.
+- **Affiliations and links come from the PDF, not from the model.**
+  Affiliations are parsed out of the header the LLM is handed, so it acts as
+  a parser, not a source of knowledge — guessing them from OpenAlex's
+  author-search returned three different "Ashish Vaswani"s with h-index 29, 5
+  and 0. Links are extracted from PDF annotations and a regex; links to other
+  people's PRs and commits are dropped, since a benchmark paper cites dozens
+  of them as its dataset.
+- **`0` and "unknown" stay distinct** — a new repo with 0 stars and a
+  rate-limited API are different facts.
 
 ## Web UI: `serve`
 
@@ -232,9 +217,9 @@ thread and the client polls `GET /api/jobs/{id}` — no SSE/WebSockets for a
 single local user. One heavy job at a time (16GB); a second request gets
 `409`, not a silent queue. Digest jobs share that same slot.
 
-Two tabs — **Исследование** and **Дайджест: свежие статьи**. The digest tab
-has a topic field, day/limit/category controls, and a per-card "Детальный
-анализ" button. LLM output is rendered as real HTML (headings, lists,
+Two tabs — **Research** and **Digest: fresh papers**. The digest tab has a
+topic field, day/limit/category controls, and a per-card "Detailed analysis"
+button. LLM output is rendered as real HTML (headings, lists,
 emphasis) built as DOM nodes rather than injected as markup — the text comes
 from a model and is never treated as trusted HTML.
 
@@ -314,10 +299,3 @@ python -m scripts.eval_ragas          # RAGAS precision/recall (judge: resident 
 
 The last two upload to the same LangSmith dataset as separate experiments —
 compare them side by side there rather than in two console tables.
-
-## Known assumptions (`ARCH-Q`)
-
-Assumptions that couldn't be verified without the real hardware are marked
-`# ARCH-Q:` in code (`config.py`, `providers/embed.py`, `providers/llm.py`).
-All have since been exercised on-device; the comments are kept as a log of
-what was originally uncertain, not as open questions.

@@ -414,19 +414,19 @@ def analyze_item(item: DiscoveredItem, on_progress: ProgressCallback | None = No
     `_analyze_items`), т.к. веб-UI теперь запускает анализ статьи по клику
     на конкретную карточку, а не на весь дайджест разом — см.
     `web/app.py::_run_item_analysis_job`."""
-    _emit(on_progress, "Пишем саммари на русском…")
+    _emit(on_progress, "Writing the summary…")
     summary_ru = _summarize_item(item)
-    _emit(on_progress, "Ищем метаданные в OpenAlex (цитируемость, venue, авторы)…")
+    _emit(on_progress, "Looking up OpenAlex metadata (citations, venue, authors)…")
     details = lookup_paper_details(item.title)
 
     insights = None
     if config.DIGEST_PDF_ANALYSIS:
-        _emit(on_progress, "Скачиваем и разбираем PDF (результаты, сравнения, ссылки на код)…")
+        _emit(on_progress, "Fetching and parsing the PDF (results, comparisons, code links)…")
         insights = _analyze_pdf(item)
         if insights is None:
-            _emit(on_progress, "PDF разобрать не удалось — только аннотация и метаданные.")
+            _emit(on_progress, "Could not parse the PDF — abstract and metadata only.")
 
-    _emit(on_progress, "Готово.")
+    _emit(on_progress, "Done.")
     return ItemAnalysis(summary_ru=summary_ru, details=details, insights=insights)
 
 
@@ -435,7 +435,7 @@ def _analyze_items(
 ) -> dict[str, ItemAnalysis]:
     analyses: dict[str, ItemAnalysis] = {}
     for i, item in enumerate(items, start=1):
-        _emit(on_progress, f"Анализируем статью {i}/{len(items)}: {item.title[:70]}…")
+        _emit(on_progress, f"Analysing paper {i}/{len(items)}: {item.title[:70]}…")
         analyses[item.id] = analyze_item(item)
     return analyses
 
@@ -525,18 +525,18 @@ def _collect_pool(
     """
     cached, covers_window = _load_cached_pool(store, days)
     if cached:
-        _emit(on_progress, f"Из индекса подняты {len(cached)} статей окна.")
+        _emit(on_progress, f"Restored {len(cached)} papers of the window from the index.")
 
     known_ids = {item.id for item in cached} if (cached and covers_window) else None
     if known_ids:
-        _emit(on_progress, "Догружаем из arXiv только новые статьи…")
+        _emit(on_progress, "Fetching only new papers from arXiv…")
     fetched = ArxivSource(categories=categories).recent(
         days=days,
         limit=None,
-        on_progress=lambda n: _emit(on_progress, f"Загружено новых статей: {n}…"),
+        on_progress=lambda n: _emit(on_progress, f"New papers fetched: {n}…"),
         known_ids=known_ids,
     )
-    _emit(on_progress, f"Новых статей из arXiv: {len(fetched)}.")
+    _emit(on_progress, f"New papers from arXiv: {len(fetched)}.")
 
     # Кэш мог собираться по другому набору категорий — дедуп по id и
     # сортировка по дате (свежие первыми), как и отдаёт arXiv.
@@ -568,10 +568,10 @@ def _rank_by_relevance(
     """
     fresh = [item for item in items if not store.has_source(item.id)]
     if fresh:
-        _emit(on_progress, f"Индексируем {len(fresh)} новых статей (из {len(items)})…")
+        _emit(on_progress, f"Indexing {len(fresh)} new papers (of {len(items)})…")
         store.add_chunks(_pool_chunks(fresh))
 
-    _emit(on_progress, f"Гибридный поиск по «{query}»…")
+    _emit(on_progress, f"Hybrid search for: {query}…")
     query_vector = embed.embed_texts([query])[0]
     by_source_id = {item.id: item for item in items}
     # Берём с запасом и отсекаем всё, чего нет в текущем пуле: коллекция
@@ -588,7 +588,7 @@ def _rank_by_relevance(
     if not candidates:
         return []
 
-    _emit(on_progress, f"Реранкуем {len(candidates)} лучших кандидатов…")
+    _emit(on_progress, f"Reranking the top {len(candidates)} candidates…")
     ranked = rerank.rerank(query, candidates, top_n=top_k)
     return [c["item"] for c in ranked]
 
@@ -608,29 +608,29 @@ def run_digest(
     summarize = config.DIGEST_SUMMARIZE if summarize is None else summarize
     query = query.strip() if query and query.strip() else None
 
-    scope = f"по «{query}» " if query else ""
-    _emit(on_progress, f"Ищем статьи {scope}за последние {days} дн. в {', '.join(categories)}…")
+    scope = f"on '{query}' " if query else ""
+    _emit(on_progress, f"Looking for papers {scope}from the last {days} days in {', '.join(categories)}…")
 
     if query:
         # Режим с темой: нужен весь пул окна, чтобы было из чего выбирать
         # релевантное — он же и кэшируется между запросами.
         store = QdrantStore(collection_name=config.QDRANT_DIGEST_COLLECTION)
         items = _collect_pool(store, categories, days, on_progress)
-        _emit(on_progress, f"Всего в окне: {len(items)}.")
+        _emit(on_progress, f"Papers in the window: {len(items)}.")
         if items:
             items = _rank_by_relevance(
                 store, query, items, config.DIGEST_QUERY_TOP_K, on_progress
             )
-            _emit(on_progress, f"Показываем топ {len(items)} по релевантности.")
+            _emit(on_progress, f"Showing the top {len(items)} by relevance.")
     else:
         # Без темы дайджест — это просто «последние N статей»: тянуть и
         # индексировать всё окно незачем.
         items = ArxivSource(categories=categories).recent(days=days, limit=limit)
-        _emit(on_progress, f"Найдено {len(items)}.")
+        _emit(on_progress, f"Found {len(items)}.")
 
     summary = None
     if summarize and items:
-        _emit(on_progress, "Собираем обзор тем…")
+        _emit(on_progress, "Building the topic overview…")
         summary = _summarize(items)
 
     analyses: dict[str, ItemAnalysis] = {}

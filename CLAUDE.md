@@ -11,9 +11,6 @@ feature tour; this file holds the standing engineering rules.
 - **Definition of done.** Verified on real hardware (real models, real
   external calls where relevant), not "seems to work" from reading the
   code — see `## Tests` below.
-- **`# ARCH-Q:` instead of guessing.** Any assumption that can't be
-  verified without the real hardware (MPS device, MLX load call, Qdrant
-  hybrid API, memory peaks) — mark it with this tag, don't silently guess.
 - Small commits per task. Type hints and docstrings on public functions.
 
 ## Hard memory constraints (16GB — do not violate)
@@ -29,8 +26,7 @@ feature tour; this file holds the standing engineering rules.
   (discovery → triage → deep read). Full text and embedding only for what
   passed triage.
 - **Corpus via generators.** Never hold all documents in memory at once.
-- Embeddings: MPS with a CPU fallback under pressure. `# ARCH-Q:` verify
-  on-device.
+- Embeddings run on MPS.
 
 ## Code architecture
 - **Provider seams.** External dependencies (LLM, embed, rerank, sources)

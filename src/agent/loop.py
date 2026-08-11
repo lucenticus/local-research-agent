@@ -126,7 +126,7 @@ def _node_plan(gs: _GraphState) -> dict:
     else:
         rs.sub_questions = new_sub_questions
     active_texts = {sq.text for sq in new_sub_questions}
-    _emit(gs["on_progress"], f"Подвопросов: {len(active_texts)}.")
+    _emit(gs["on_progress"], f"Subquestions: {len(active_texts)}.")
     return {"active_texts": active_texts}
 
 
@@ -153,7 +153,7 @@ def _node_run_pass(gs: _GraphState) -> dict:
     # инкрементом и последний разрешённый проход всегда пропадает вхолостую
     # (было реальным багом, поймано тестом на моках).
     current_pass = rs.iterations + 1
-    _emit(gs["on_progress"], f"Итерация {current_pass}…")
+    _emit(gs["on_progress"], f"Iteration {current_pass}…")
     # С каждым проходом просим у источников больше кандидатов — иначе
     # повторный discover() с тем же запросом просто повторит уже известную
     # выдачу и не найдёт ничего нового.
@@ -170,12 +170,12 @@ def _node_run_pass(gs: _GraphState) -> dict:
 
 def _node_check_faithfulness(gs: _GraphState) -> dict:
     rs = gs["research_state"]
-    _emit(gs["on_progress"], "Все подвопросы покрыты — проверяем обоснованность черновика…")
+    _emit(gs["on_progress"], "All subquestions covered — checking the draft's faithfulness…")
     if gs["low_faithfulness_retry_used"]:
         return {}  # retry уже использован — больше не переоткрываем
     if _draft_is_faithful(gs["question"], gs["store"]):
         return {}
-    _emit(gs["on_progress"], "Обоснованность низкая — собираем больше источников.")
+    _emit(gs["on_progress"], "Faithfulness is low — gathering more sources.")
     for sq in rs.sub_questions:
         if sq.text in gs["active_texts"]:
             sq.status = SubQuestionStatus.OPEN
@@ -188,7 +188,7 @@ def _node_finalize(gs: _GraphState) -> dict:
     # а не накоплены по ходу (иначе позже закрытый подвопрос остался бы в
     # gaps как стухший артефакт).
     rs.gaps = [sq.text for sq in rs.open_sub_questions()]
-    _emit(gs["on_progress"], "Синтезируем ответ…")
+    _emit(gs["on_progress"], "Synthesizing the answer…")
     return {}
 
 

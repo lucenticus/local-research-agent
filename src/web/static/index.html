@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -335,21 +335,21 @@
 <body>
 <div class="wrap">
   <h1>local-research-agent</h1>
-  <p class="subtitle">Deep-research: arXiv, Semantic Scholar, веб-поиск — локально, на MLX.</p>
+  <p class="subtitle">Deep research over arXiv, Semantic Scholar and the web — fully local, on MLX.</p>
 
   <div class="tabs">
-    <button type="button" class="tab-btn active" id="tab-research">Исследование</button>
-    <button type="button" class="tab-btn" id="tab-digest">Дайджест: свежие статьи</button>
+    <button type="button" class="tab-btn active" id="tab-research">Research</button>
+    <button type="button" class="tab-btn" id="tab-digest">Digest: fresh papers</button>
   </div>
 
   <div id="research-section">
     <form id="form">
-      <textarea id="question" placeholder="Задайте вопрос для исследования…" required></textarea>
-      <button id="submit" type="submit">Спросить</button>
+      <textarea id="question" placeholder="Ask a research question…" required></textarea>
+      <button id="submit" type="submit">Ask</button>
     </form>
 
     <div id="progress-panel" class="panel hidden">
-      <h2>Ход исследования</h2>
+      <h2>Progress</h2>
       <ul id="progress-list"></ul>
     </div>
 
@@ -360,15 +360,15 @@
     <div id="turns"></div>
 
     <form id="followup-form" class="hidden">
-      <textarea id="followup-question" placeholder="Уточняющий вопрос по этому же диалогу…"></textarea>
-      <button id="followup-submit" type="submit">Уточнить</button>
+      <textarea id="followup-question" placeholder="Follow-up question in the same conversation…"></textarea>
+      <button id="followup-submit" type="submit">Follow up</button>
     </form>
 
     <details id="candidates-panel" class="panel hidden">
-      <summary id="candidates-summary">Все найденные кандидаты</summary>
+      <summary id="candidates-summary">All discovered candidates</summary>
       <table id="candidates-table">
         <thead>
-          <tr><th></th><th>score</th><th>цитирований</th><th>источник</th><th>заголовок</th><th></th></tr>
+          <tr><th></th><th>score</th><th>citations</th><th>source</th><th>title</th><th></th></tr>
         </thead>
         <tbody id="candidates-body"></tbody>
       </table>
@@ -378,19 +378,19 @@
   <div id="digest-section" class="hidden">
     <form id="digest-form">
       <input type="text" id="digest-query" class="digest-query-input"
-             placeholder="Тема (необязательно) — например, diffusion models">
+             placeholder="Topic (optional) — e.g. diffusion models">
       <div id="digest-query-hint" class="digest-query-hint hidden">
-        При заданной теме показываются 5 самых релевантных статей за период — поле «Показать» не используется.
+        With a topic set, the 5 most relevant papers of the period are shown — the "Show" field is not used.
       </div>
-      <label>За последние <input type="number" id="digest-days" value="7" min="1" max="90"> дн.</label>
-      <label id="digest-limit-label">Показать <input type="number" id="digest-limit" value="20" min="1" max="100"> статей</label>
-      <label><input type="checkbox" id="digest-no-summary"> без обзора тем</label>
-      <button id="digest-submit" type="submit">Собрать дайджест</button>
+      <label>Last <input type="number" id="digest-days" value="7" min="1" max="90"> days</label>
+      <label id="digest-limit-label">Show <input type="number" id="digest-limit" value="20" min="1" max="100"> papers</label>
+      <label><input type="checkbox" id="digest-no-summary"> no topic overview</label>
+      <button id="digest-submit" type="submit">Build digest</button>
       <div class="category-list" id="digest-categories"></div>
     </form>
 
     <div id="digest-progress-panel" class="panel hidden">
-      <h2>Ход сбора</h2>
+      <h2>Progress</h2>
       <ul id="digest-progress-list"></ul>
     </div>
 
@@ -477,7 +477,7 @@ function renderTurn(question, result) {
     const div = document.createElement("div");
     div.className = "gaps";
     const strong = document.createElement("strong");
-    strong.textContent = "Непокрытые вопросы (бюджет исследования исчерпан):";
+    strong.textContent = "Uncovered subquestions (research budget exhausted):";
     div.appendChild(strong);
     result.gaps.forEach((gap) => {
       const p = document.createElement("div");
@@ -489,7 +489,7 @@ function renderTurn(question, result) {
 
   const sourcesHeading = document.createElement("h2");
   sourcesHeading.style.marginTop = "16px";
-  sourcesHeading.textContent = "Источники";
+  sourcesHeading.textContent = "Sources";
   panel.appendChild(sourcesHeading);
 
   const sourcesEl = document.createElement("ol");
@@ -509,7 +509,7 @@ function renderTurn(question, result) {
     if (source.citation_count !== null && source.citation_count !== undefined) {
       const badge = document.createElement("span");
       badge.className = "citation-badge";
-      badge.textContent = ` · цитирований: ${source.citation_count}`;
+      badge.textContent = ` · citations: ${source.citation_count}`;
       li.appendChild(badge);
     }
     sourcesEl.appendChild(li);
@@ -519,8 +519,8 @@ function renderTurn(question, result) {
   const stats = document.createElement("div");
   stats.className = "stats";
   stats.textContent =
-    `Итераций: ${result.iterations} · прочитано источников: ${result.read_count} · ` +
-    `найдено кандидатов: ${result.candidates_count}`;
+    `Iterations: ${result.iterations} · sources read: ${result.read_count} · ` +
+    `candidates found: ${result.candidates_count}`;
   panel.appendChild(stats);
 
   turnsEl.appendChild(panel);
@@ -539,7 +539,7 @@ function renderCandidates(candidates) {
     candidatesPanel.classList.add("hidden");
     return;
   }
-  candidatesSummary.textContent = `Все найденные кандидаты (${candidates.length}) — как агент сузил поиск`;
+  candidatesSummary.textContent = `All discovered candidates (${candidates.length}) — how the agent narrowed the search`;
   candidates.forEach((c) => {
     const tr = document.createElement("tr");
 
@@ -580,7 +580,7 @@ function renderCandidates(candidates) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "expand-btn";
-      btn.textContent = "подробнее";
+      btn.textContent = "details";
       btn.addEventListener("click", () => expandCandidate(c));
       expandTd.appendChild(btn);
     }
@@ -594,7 +594,7 @@ function renderCandidates(candidates) {
 function renderError(message) {
   progressPanel.classList.add("hidden");
   errorPanel.classList.remove("hidden");
-  errorText.textContent = "Ошибка: " + message;
+  errorText.textContent = "Error: " + message;
 }
 
 async function poll(jobId, question) {
@@ -606,7 +606,7 @@ async function poll(jobId, question) {
     return;
   }
   if (!resp.ok) {
-    renderError("не удалось получить статус запроса (" + resp.status + ")");
+    renderError("could not fetch job status (" + resp.status + ")");
     setBusy(false);
     return;
   }
@@ -620,7 +620,7 @@ async function poll(jobId, question) {
     renderTurn(question, data.result);
     setBusy(false);
   } else {
-    renderError(data.error || "неизвестная ошибка");
+    renderError(data.error || "unknown error");
     setBusy(false);
   }
 }
@@ -635,20 +635,20 @@ async function submitJob(url, body, question) {
       body: JSON.stringify(body),
     });
   } catch (err) {
-    renderError("не удалось связаться с сервером");
+    renderError("could not reach the server");
     setBusy(false);
     return;
   }
 
   if (resp.status === 409 || resp.status === 404) {
     const data = await resp.json();
-    renderError(data.detail || "запрос отклонён сервером");
+    renderError(data.detail || "request rejected by the server");
     setBusy(false);
     return;
   }
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
-    renderError(data.detail || ("ошибка запроса (" + resp.status + ")"));
+    renderError(data.detail || ("request failed (" + resp.status + ")"));
     setBusy(false);
     return;
   }
@@ -659,7 +659,7 @@ async function submitJob(url, body, question) {
 
 function expandCandidate(candidate) {
   if (busy) return;
-  const question = `Расскажи подробнее об источнике: ${candidate.title}`;
+  const question = `Tell me more about this source: ${candidate.title}`;
   submitJob(`/api/sessions/${sessionId}/followup`, { question, focus_candidate_id: candidate.id }, question);
 }
 
@@ -776,7 +776,7 @@ function renderDigestError(message) {
   digestProgressPanel.classList.add("hidden");
   digestResultPanel.classList.add("hidden");
   digestErrorPanel.classList.remove("hidden");
-  digestErrorText.textContent = "Ошибка: " + message;
+  digestErrorText.textContent = "Error: " + message;
 }
 
 function renderDigestAnalysis(analysis) {
@@ -793,7 +793,7 @@ function renderDigestAnalysis(analysis) {
   if (!analysis.details) {
     const unindexed = document.createElement("div");
     unindexed.className = "digest-analysis-unindexed";
-    unindexed.textContent = "Метаданные: — (статья ещё не проиндексирована в OpenAlex)";
+    unindexed.textContent = "Metadata: — (not indexed in OpenAlex yet)";
     box.appendChild(unindexed);
   } else {
     const meta = document.createElement("div");
@@ -801,7 +801,7 @@ function renderDigestAnalysis(analysis) {
     const cited = analysis.details.citation_count !== null && analysis.details.citation_count !== undefined
       ? analysis.details.citation_count : "—";
     const venue = analysis.details.venue || "—";
-    meta.textContent = `Цитирований: ${cited} · Venue: ${venue}`;
+    meta.textContent = `Citations: ${cited} · Venue: ${venue}`;
     box.appendChild(meta);
 
     if (analysis.details.authors && analysis.details.authors.length > 0) {
@@ -889,7 +889,7 @@ function renderPaperInsights(insights) {
   if (!insights) {
     const missing = document.createElement("div");
     missing.className = "digest-analysis-unindexed";
-    missing.textContent = "Разбор PDF: — (не удалось скачать или разобрать)";
+    missing.textContent = "PDF analysis: — (could not download or parse)";
     return missing;
   }
 
@@ -899,7 +899,7 @@ function renderPaperInsights(insights) {
   const heading = document.createElement("div");
   heading.className = "digest-insights-heading";
   const sections = (insights.sections_used || []).join(", ");
-  heading.textContent = sections ? `Разбор PDF (секции: ${sections})` : "Разбор PDF";
+  heading.textContent = sections ? `PDF analysis (sections: ${sections})` : "PDF analysis";
   wrap.appendChild(heading);
 
   const findings = document.createElement("div");
@@ -911,7 +911,7 @@ function renderPaperInsights(insights) {
   if (authors.length > 0) {
     const heading = document.createElement("div");
     heading.className = "digest-insights-heading";
-    heading.textContent = "Авторы и аффилиации (из PDF)";
+    heading.textContent = "Authors and affiliations (from the PDF)";
     wrap.appendChild(heading);
 
     const list = document.createElement("ul");
@@ -929,9 +929,9 @@ function renderPaperInsights(insights) {
   linksEl.className = "digest-insights-links";
   if (links.length === 0) {
     linksEl.classList.add("digest-analysis-unindexed");
-    linksEl.textContent = "Код и модели: — (ссылок в PDF не нашлось)";
+    linksEl.textContent = "Code and models: — (no links found in the PDF)";
   } else {
-    linksEl.appendChild(document.createTextNode("Код и модели: "));
+    linksEl.appendChild(document.createTextNode("Code and models: "));
     links.forEach((link, i) => {
       if (i > 0) linksEl.appendChild(document.createTextNode(" · "));
       const a = document.createElement("a");
@@ -983,7 +983,7 @@ async function pollItemAnalysis(jobId, itemId, btn, progressList, errorDiv, cont
     return;
   }
   if (!resp.ok) {
-    errorDiv.textContent = "Ошибка: не удалось получить статус анализа (" + resp.status + ")";
+    errorDiv.textContent = "Error: could not fetch analysis status (" + resp.status + ")";
     errorDiv.classList.remove("hidden");
     btn.disabled = false;
     return;
@@ -998,7 +998,7 @@ async function pollItemAnalysis(jobId, itemId, btn, progressList, errorDiv, cont
     btn.remove();
     container.appendChild(renderDigestAnalysis(data.result));
   } else {
-    errorDiv.textContent = "Ошибка: " + (data.error || "неизвестная ошибка");
+    errorDiv.textContent = "Error: " + (data.error || "unknown error");
     errorDiv.classList.remove("hidden");
     btn.disabled = false;
   }
@@ -1014,21 +1014,27 @@ async function startItemAnalysis(jobId, itemId, btn, progressList, errorDiv, con
   try {
     resp = await fetch(`/api/digest/${jobId}/items/${encodeURIComponent(itemId)}/analyze`, { method: "POST" });
   } catch (err) {
-    errorDiv.textContent = "Ошибка: не удалось связаться с сервером";
-    errorDiv.classList.remove("hidden");
-    btn.disabled = false;
+    failToStart("Error: could not reach the server");
     return;
   }
 
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
-    errorDiv.textContent = "Ошибка: " + (data.detail || ("код ответа " + resp.status));
-    errorDiv.classList.remove("hidden");
-    btn.disabled = false;
+    failToStart("Error: " + (data.detail || ("status " + resp.status)));
     return;
   }
 
   pollItemAnalysis(jobId, itemId, btn, progressList, errorDiv, container);
+
+  // Прогресс-список прячется вместе с ошибкой: иначе после отказа (например,
+  // 409 — уже идёт другой анализ) под кнопкой остаётся висеть пустой список,
+  // как будто что-то всё ещё выполняется.
+  function failToStart(message) {
+    errorDiv.textContent = message;
+    errorDiv.classList.remove("hidden");
+    progressList.classList.add("hidden");
+    btn.disabled = false;
+  }
 }
 
 function renderItemAnalysisControls(jobId, item) {
@@ -1043,7 +1049,7 @@ function renderItemAnalysisControls(jobId, item) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "expand-btn digest-analyze-btn";
-  btn.textContent = "Детальный анализ";
+  btn.textContent = "Detailed analysis";
   container.appendChild(btn);
 
   const progressList = document.createElement("ul");
@@ -1061,9 +1067,9 @@ function renderItemAnalysisControls(jobId, item) {
 
 function renderDigestResult(result, jobId) {
   digestErrorPanel.classList.add("hidden");
-  const queryPart = result.query ? `по «${result.query}» ` : "";
+  const queryPart = result.query ? `on "${result.query}" ` : "";
   digestHeading.textContent =
-    `${result.items.length} статей ${queryPart}за последние ${result.days} дн. в категориях ${result.categories.join(", ")}`;
+    `${result.items.length} papers ${queryPart}from the last ${result.days} days in ${result.categories.join(", ")}`;
 
   if (result.summary) {
     digestSummaryEl.textContent = result.summary;
@@ -1093,7 +1099,7 @@ function renderDigestResult(result, jobId) {
 
     const meta = document.createElement("div");
     meta.className = "digest-item-meta";
-    const authors = (item.authors || []).slice(0, 3).join(", ") + (item.authors.length > 3 ? " и др." : "");
+    const authors = (item.authors || []).slice(0, 3).join(", ") + (item.authors.length > 3 ? " et al." : "");
     const date = (item.published_date || "").slice(0, 10);
     meta.textContent = [authors, date].filter(Boolean).join(" · ");
     div.appendChild(meta);
@@ -1120,7 +1126,7 @@ async function pollDigest(jobId) {
     return;
   }
   if (!resp.ok) {
-    renderDigestError("не удалось получить статус запроса (" + resp.status + ")");
+    renderDigestError("could not fetch job status (" + resp.status + ")");
     setDigestBusy(false);
     return;
   }
@@ -1134,7 +1140,7 @@ async function pollDigest(jobId) {
     renderDigestResult(data.result, jobId);
     setDigestBusy(false);
   } else {
-    renderDigestError(data.error || "неизвестная ошибка");
+    renderDigestError(data.error || "unknown error");
     setDigestBusy(false);
   }
 }
@@ -1167,14 +1173,14 @@ digestForm.addEventListener("submit", async (e) => {
       body: JSON.stringify(body),
     });
   } catch (err) {
-    renderDigestError("не удалось связаться с сервером");
+    renderDigestError("could not reach the server");
     setDigestBusy(false);
     return;
   }
 
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
-    renderDigestError(data.detail || ("ошибка запроса (" + resp.status + ")"));
+    renderDigestError(data.detail || ("request failed (" + resp.status + ")"));
     setDigestBusy(false);
     return;
   }

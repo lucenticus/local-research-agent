@@ -230,11 +230,11 @@ def _item_analysis_job_to_dict(job: ItemAnalysisJob) -> dict[str, Any]:
 
 def _find_digest_item(job: DigestJob, item_id: str) -> Any:
     if job.result is None:
-        raise HTTPException(409, "Дайджест ещё не готов")
+        raise HTTPException(409, "The digest is not ready yet")
     for item in job.result.items:
         if item.id == item_id:
             return item
-    raise HTTPException(404, "Неизвестная статья в этом дайджесте")
+    raise HTTPException(404, "Unknown paper in this digest")
 
 
 def _run_item_analysis_job(digest_job: DigestJob, item_id: str, item: Any) -> None:
@@ -307,7 +307,7 @@ def _run_job(job: Job, session: Session, run: Any) -> None:
 def _require_question(raw: str) -> str:
     question = raw.strip()
     if not question:
-        raise HTTPException(400, "Пустой вопрос")
+        raise HTTPException(400, "Empty question")
     return question
 
 
@@ -317,7 +317,7 @@ def _require_free_slot() -> None:
     несколько тяжёлых моделей параллельно): общий для research()-джобов и
     digest-джобов, оба используют резидентную LLM."""
     if _current_job_id is not None:
-        raise HTTPException(409, "Уже выполняется другой запрос — дождитесь его завершения")
+        raise HTTPException(409, "Another job is already running — wait for it to finish")
 
 
 def _claim_job_slot(session_id: str, question: str) -> Job:
@@ -361,9 +361,9 @@ def create_followup(session_id: str, payload: FollowupRequest) -> dict[str, Any]
     with _jobs_lock:
         session = _sessions.get(session_id)
         if session is None:
-            raise HTTPException(404, "Неизвестная сессия — сначала задайте исходный вопрос")
+            raise HTTPException(404, "Unknown session — ask the initial question first")
         if session.state is None:
-            raise HTTPException(409, "Исходный запрос этой сессии ещё не завершён")
+            raise HTTPException(409, "This session's initial job has not finished yet")
         _require_free_slot()
         job = _claim_job_slot(session_id, question)
 
@@ -380,7 +380,7 @@ def get_job(job_id: str) -> dict[str, Any]:
     with _jobs_lock:
         job = _jobs.get(job_id)
         if job is None:
-            raise HTTPException(404, "Неизвестный job_id")
+            raise HTTPException(404, "Unknown job_id")
         return _job_to_dict(job)
 
 
@@ -406,7 +406,7 @@ def get_digest(job_id: str) -> dict[str, Any]:
     with _jobs_lock:
         job = _digest_jobs.get(job_id)
         if job is None:
-            raise HTTPException(404, "Неизвестный job_id")
+            raise HTTPException(404, "Unknown job_id")
         return _digest_job_to_dict(job)
 
 
@@ -416,11 +416,11 @@ def create_item_analysis(job_id: str, item_id: str) -> dict[str, Any]:
     with _jobs_lock:
         digest_job = _digest_jobs.get(job_id)
         if digest_job is None:
-            raise HTTPException(404, "Неизвестный job_id")
+            raise HTTPException(404, "Unknown job_id")
         item = _find_digest_item(digest_job, item_id)
         existing = digest_job.item_analyses.get(item_id)
         if existing is not None and existing.status == "running":
-            raise HTTPException(409, "Анализ этой статьи уже выполняется")
+            raise HTTPException(409, "Analysis of this paper is already running")
         _require_free_slot()
         analysis_job = ItemAnalysisJob()
         digest_job.item_analyses[item_id] = analysis_job
@@ -437,8 +437,8 @@ def get_item_analysis(job_id: str, item_id: str) -> dict[str, Any]:
     with _jobs_lock:
         digest_job = _digest_jobs.get(job_id)
         if digest_job is None:
-            raise HTTPException(404, "Неизвестный job_id")
+            raise HTTPException(404, "Unknown job_id")
         analysis_job = digest_job.item_analyses.get(item_id)
         if analysis_job is None:
-            raise HTTPException(404, "Анализ этой статьи ещё не запускался")
+            raise HTTPException(404, "Analysis of this paper has not been started")
         return _item_analysis_job_to_dict(analysis_job)

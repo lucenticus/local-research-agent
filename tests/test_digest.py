@@ -87,9 +87,9 @@ def test_run_digest_reports_progress(monkeypatch):
     messages = []
 
     digest.run_digest(on_progress=messages.append)
-    assert any("Ищем статьи" in m for m in messages)
-    assert any("Найдено 1" in m for m in messages)
-    assert any("обзор" in m for m in messages)
+    assert any("Looking for papers" in m for m in messages)
+    assert any("Found 1" in m for m in messages)
+    assert any("overview" in m for m in messages)
 
 
 class _FakeStore:
@@ -208,10 +208,10 @@ def test_run_digest_with_query_narrows_pool_by_hybrid_search_then_reranks(monkey
     assert [c["item"] for c in captured["rerank_candidates"]] == pool[:3]
     assert result.query == "diffusion models"
     assert len(result.items) == 2  # обрезано реранком до DIGEST_QUERY_TOP_K
-    assert any("«diffusion models»" in m for m in messages)
-    assert any("Индексируем" in m for m in messages)
-    assert any("Гибридный поиск" in m for m in messages)
-    assert any("Реранкуем" in m for m in messages)
+    assert any("diffusion models" in m for m in messages)
+    assert any("Indexing" in m for m in messages)
+    assert any("Hybrid search" in m for m in messages)
+    assert any("Reranking" in m for m in messages)
 
 
 def test_collect_pool_first_run_fetches_whole_window(monkeypatch):
@@ -263,7 +263,7 @@ def test_collect_pool_reuses_cached_window_and_fetches_only_new(monkeypatch):
     assert restored.title == "Paper 1"
     assert restored.abstract == "Abstract 1"
     assert restored.meta["authors"] == ["A. Uthor 1"]
-    assert any("Из индекса подняты" in m for m in messages)
+    assert any("Restored" in m for m in messages)
 
 
 def test_collect_pool_refetches_window_when_cache_does_not_reach_its_bottom(monkeypatch):
@@ -406,8 +406,8 @@ def test_run_digest_deep_analyzes_each_item(monkeypatch):
     assert set(result.analyses.keys()) == {"arxiv:1", "arxiv:2"}
     assert result.analyses["arxiv:1"].summary_ru == "резюме Paper 1"
     assert result.analyses["arxiv:1"].details is details
-    assert any("Анализируем статью 1/2" in m for m in messages)
-    assert any("Анализируем статью 2/2" in m for m in messages)
+    assert any("Analysing paper 1/2" in m for m in messages)
+    assert any("Analysing paper 2/2" in m for m in messages)
 
 
 def test_run_digest_deep_handles_unindexed_paper(monkeypatch):
