@@ -41,74 +41,27 @@ search; otherwise `docker compose up -d searxng` gives a local fallback.
 ## Architecture
 
 ```mermaid
-flowchart TB
-    browser(["browser"])
-    mcpclient(["MCP client"])
+flowchart LR
+    entry(["CLI<br/>Web UI<br/>MCP server"])
 
-    subgraph entry["entry points"]
-        fastapi["web/app.py — FastAPI<br/>background job + polling"]
-        mcptools["mcp_server.py — ask/research<br/>as MCP tools (stdio)"]
-        cli["cli.py — index / ask /<br/>research / digest"]
+    subgraph modes["three modes"]
+        ask["<b>ask</b> — local RAG<br/>hybrid search → rerank → cited answer"]
+        research["<b>research</b> — deep research<br/>plan → discover → triage → deep read<br/>→ synthesize → self-check"]
+        digest["<b>digest</b> — fresh arXiv papers<br/>fetch window → hybrid search → rerank<br/>→ per-paper PDF analysis"]
     end
 
-    subgraph agent["agent/"]
-        runner["research_runner.py<br/>run_research / run_followup / retrieve"]
-        loop["loop.py — LangGraph:<br/>plan → run_pass* → check → finalize"]
-        funnel["funnel.py<br/>discovery → triage → deep read"]
-        planner["planner.py — deterministic"]
-        synth["synthesize.py — LCEL, [n] citations"]
-        evaluate["evaluate.py — coverage + faithfulness"]
-        digest["digest.py<br/>pool → hybrid → rerank → PDF analysis"]
+    subgraph shared["shared machinery"]
+        sources["<b>sources/</b><br/>arXiv · Semantic Scholar · CrossRef<br/>Wikipedia · web · PDFs<br/>OpenAlex citations · GitHub stars"]
+        store[("<b>Qdrant</b><br/>hybrid dense+sparse index<br/>+ cached digest window")]
+        models["<b>MLX models</b><br/>LLM + embeddings — resident<br/>reranker — load → score → release"]
     end
 
-    subgraph providers["providers/"]
-        llm["llm.py — Qwen3.5-4B MLX<br/>RESIDENT"]
-        embed["embed.py — bge-m3 dense+sparse<br/>RESIDENT"]
-        rerank["rerank.py — Qwen3-Reranker<br/>load→score→RELEASE"]
-    end
-
-    subgraph sources["sources/"]
-        discovery["arxiv · semantic_scholar · crossref<br/>wikipedia · web/tavily<br/>(metadata only)"]
-        pdf["pdf.py — fetch + sections<br/>+ links + author header"]
-        citations["citations.py — OpenAlex"]
-        gh["github.py — stars"]
-    end
-
-    subgraph store["store/qdrant_store.py — Qdrant (Docker)"]
-        main[("main + research<br/>dense+sparse, RRF hybrid")]
-        pool[("digest_pool<br/>cached week of papers")]
-    end
-
-    browser <--> fastapi
-    mcpclient <--> mcptools
-    cli --> runner & digest
-    fastapi --> runner & digest
-    mcptools --> runner
-
-    runner --> loop --> funnel & planner & synth & evaluate
-    funnel --> discovery & pdf --> main
-    runner --> main
-    evaluate --> rerank
-
-    digest --> discovery
-    digest --> pool
-    digest --> rerank
-    digest --> pdf & citations & gh
-
-    synth --> llm
-    main --> embed
-    pool --> embed
-
-    classDef resident stroke:#2e7d32,stroke-width:3px
-    classDef ondemand stroke:#e65100,stroke-width:3px,stroke-dasharray:5 4
-    classDef cache stroke:#1565c0,stroke-width:3px
-    class llm,embed resident
-    class rerank ondemand
-    class pool cache
+    entry --> modes
+    modes --> shared
 ```
 
-Green = resident for the process lifetime · dashed orange = loaded and
-released per call · blue = cache that survives between runs.
+Each mode is a pipeline over the same machinery; the per-module map lives in
+the sections below.
 
 **The memory invariant** (§1 CLAUDE.md): `llm` and `embed` stay resident;
 `rerank` loads → scores → releases on every call. Two heavy models are never
