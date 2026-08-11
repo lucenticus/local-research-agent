@@ -5,7 +5,16 @@ docstring: только для тестов, продовый код всегд�
 
 from __future__ import annotations
 
-from src.store.qdrant_store import Chunk, QdrantStore, document_to_hit, hit_to_document
+import uuid
+
+import pytest
+from qdrant_client import QdrantClient
+
+from datetime import datetime, timedelta, timezone
+
+from src.store.qdrant_store import (
+    Chunk, QdrantStore, document_to_hit, hit_to_document, published_timestamp,
+)
 
 
 def _store(tmp_path, **kwargs) -> QdrantStore:
@@ -137,3 +146,100 @@ def test_hit_to_document_and_back_round_trips():
     assert doc.page_content == "hello"
     assert doc.metadata == {"source_id": "a", "citation_count": 5}
     assert document_to_hit(doc) == hit
+
+
+def _dated_chunk(chunk_id: str, source_id: str, published_date: str, **kwargs) -> Chunk:
+    return Chunk(
+        id=chunk_id, text=f"Title {source_id}\nAbstract {source_id}", source_id=source_id,
+        source_title=f"Title {source_id}", section="abstract", vector=[0.1, 0.2],
+        published_date=published_date, **kwargs,
+    )
+
+
+def test_published_timestamp_parses_iso_and_rejects_junk():
+    assert published_timestamp("2026-08-10T12:00:00Z") == pytest.approx(
+        datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc).timestamp()
+    )
+    assert published_timestamp("") is None
+    assert published_timestamp("not-a-date") is None
+
+
+def test_load_pool_returns_only_points_inside_the_window(tmp_path):
+    """Digest поднимает по этому окно «за последние N дней» прямо из индекса,
+    вместо повторной выгрузки тех же статей из arXiv."""
+    store = _store(tmp_path)
+    now = datetime.now(timezone.utc)
+    store.rebuild(
+        [
+            _dated_chunk("11111111-1111-1111-1111-111111111111", "fresh",
+                         (now - timedelta(days=1)).isoformat(), authors=["A. Uthor"]),
+            _dated_chunk("22222222-2222-2222-2222-222222222222", "old",
+                         (now - timedelta(days=40)).isoformat()),
+        ]
+    )
+
+    cutoff = (now - timedelta(days=7)).timestamp()
+    payloads = store.load_pool(cutoff)
+    assert [p["source_id"] for p in payloads] == ["fresh"]
+    assert payloads[0]["authors"] == ["A. Uthor"]
+    assert payloads[0]["source_title"] == "Title fresh"
+
+
+def test_load_pool_skips_points_without_a_publication_date(tmp_path):
+    """`cli index`/funnel кладут чанки без даты — в digest-пул им нельзя:
+    непонятно, попадают ли они в окно."""
+    store = _store(tmp_path)
+    store.rebuild(
+        [
+            Chunk(id="33333333-3333-3333-3333-333333333333", text="t", source_id="undated",
+                  source_title="U", section="", vector=[0.1, 0.2]),
+        ]
+    )
+    assert store.load_pool(0) == []
+    assert store.oldest_published_ts() is None
+
+
+def test_oldest_published_ts_reports_the_earliest_known_paper(tmp_path):
+    store = _store(tmp_path)
+    now = datetime.now(timezone.utc)
+    oldest = now - timedelta(days=40)
+    store.rebuild(
+        [
+            _dated_chunk("11111111-1111-1111-1111-111111111111", "a", (now - timedelta(days=1)).isoformat()),
+            _dated_chunk("22222222-2222-2222-2222-222222222222", "b", oldest.isoformat()),
+        ]
+    )
+    assert store.oldest_published_ts() == pytest.approx(oldest.timestamp())
+
+
+def test_load_pool_on_missing_collection_is_empty_not_an_error(tmp_path):
+    store = _store(tmp_path, collection_name="never-created")
+    assert store.load_pool(0) == []
+    assert store.oldest_published_ts() is None
+
+
+def test_add_chunks_splits_large_upserts_into_batches(tmp_path, monkeypatch):
+    """Один upsert на весь digest-пул упирался в лимит тела запроса Qdrant
+    (2143 чанка = 53МБ при лимите 32МБ, поймано реальным прогоном)."""
+    import src.store.qdrant_store as qs
+
+    monkeypatch.setattr(qs, "_UPSERT_BATCH", 2)
+    store = _store(tmp_path)
+    chunks = [
+        Chunk(id=str(uuid.uuid4()), text=f"t{i}", source_id=f"s{i}", source_title="T",
+              section="", vector=[0.1, 0.2])
+        for i in range(5)
+    ]
+
+    sizes = []
+    real_upsert = QdrantClient.upsert
+    monkeypatch.setattr(
+        QdrantClient, "upsert",
+        lambda self, collection_name, points, **kw: (
+            sizes.append(len(points)), real_upsert(self, collection_name, points, **kw)
+        )[1],
+    )
+
+    store.add_chunks(chunks)
+    assert sizes == [2, 2, 1]
+    assert all(store.has_source(f"s{i}") for i in range(5))

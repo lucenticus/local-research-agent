@@ -28,6 +28,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from langchain_core.documents import Document
@@ -44,6 +45,12 @@ _SPARSE_VECTOR_NAME = "sparse"
 # финальный k, иначе fusion нечего сливать (тот же принцип, что и
 # config.RERANK_CANDIDATES_K для реранкера поверх retrieval).
 _PREFETCH_MULTIPLIER = 5
+# Размер страницы при scroll'е digest-пула (`load_pool`) — пул за неделю это
+# тысячи точек, тянуть их одним запросом незачем.
+_SCROLL_PAGE = 1000
+# Точек на один upsert. 2143 чанка одним запросом — это 53МБ, а у Qdrant
+# лимит тела 32МБ (см. `_upsert_batched`); 256 даёт запросы в единицы МБ.
+_UPSERT_BATCH = 256
 
 
 @dataclass
@@ -63,6 +70,13 @@ class Chunk:
     # cli.py/funnel.py) — пустой sparse-вектор означает "sparse не считался",
     # не "текст пустой".
     sparse: dict[int, float] = field(default_factory=dict)
+    # Метаданные публикации. Нужны digest-пулу (agent/digest.py), чтобы
+    # восстанавливать окно «за последние N дней» прямо из индекса и не
+    # выкачивать те же статьи из arXiv на каждый запрос; остальные
+    # потребители (cli index, funnel) их не заполняют — пустые значения
+    # означают "неизвестно", и такие точки просто не попадают в digest-пул.
+    published_date: str = ""  # ISO, как отдал источник — для отображения
+    authors: list[str] = field(default_factory=list)
 
 
 def _point_id(chunk_id: str) -> str:
@@ -77,8 +91,24 @@ def _point_id(chunk_id: str) -> str:
         return str(uuid.uuid5(uuid.NAMESPACE_OID, chunk_id))
 
 
+def published_timestamp(published_date: str) -> float | None:
+    """ISO-дата -> unix-время. `None`, если даты нет или она не парсится.
+
+    Qdrant умеет range-фильтр и order_by только по числовому полю, а
+    сортировать/резать ISO-строки лексикографически некорректно (разные
+    смещения таймзон), поэтому рядом с `published_date` в payload кладётся
+    числовой `published_ts` — по нему и идёт отбор окна в `load_pool`.
+    """
+    if not published_date:
+        return None
+    try:
+        return datetime.fromisoformat(published_date.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def _payload(chunk: Chunk) -> dict[str, Any]:
-    return {
+    payload = {
         "chunk_id": chunk.id,
         "text": chunk.text,
         "source_id": chunk.source_id,
@@ -86,7 +116,13 @@ def _payload(chunk: Chunk) -> dict[str, Any]:
         "section": chunk.section,
         "url": chunk.url,
         "citation_count": chunk.citation_count,
+        "published_date": chunk.published_date,
+        "authors": list(chunk.authors),
     }
+    published_ts = published_timestamp(chunk.published_date)
+    if published_ts is not None:
+        payload["published_ts"] = published_ts
+    return payload
 
 
 def _point(chunk: Chunk) -> models.PointStruct:
@@ -155,6 +191,12 @@ class QdrantStore(VectorStore):
         client.create_payload_index(
             self._collection_name, field_name="source_id", field_schema=models.PayloadSchemaType.KEYWORD
         )
+        # Индекс под `load_pool`/`oldest_published_ts` (digest-пул): без него
+        # range-фильтр и order_by по published_ts либо не работают, либо
+        # деградируют на растущей коллекции.
+        client.create_payload_index(
+            self._collection_name, field_name="published_ts", field_schema=models.PayloadSchemaType.FLOAT
+        )
 
     def rebuild(self, chunks: list[Chunk]) -> None:
         """Полная пересборка коллекции из chunks."""
@@ -164,7 +206,7 @@ class QdrantStore(VectorStore):
         if not chunks:
             return
         self._create_collection(dim=len(chunks[0].vector))
-        client.upsert(self._collection_name, points=[_point(c) for c in chunks])
+        self._upsert_batched(chunks)
 
     def add_chunks(self, chunks: list[Chunk]) -> None:
         """Инкрементально дописывает chunks (создаёт коллекцию, если её ещё нет).
@@ -178,7 +220,20 @@ class QdrantStore(VectorStore):
         client = self._connect()
         if not client.collection_exists(self._collection_name):
             self._create_collection(dim=len(chunks[0].vector))
-        client.upsert(self._collection_name, points=[_point(c) for c in chunks])
+        self._upsert_batched(chunks)
+
+    def _upsert_batched(self, chunks: list[Chunk]) -> None:
+        """Заливка пачками, а не одним запросом.
+
+        У Qdrant есть лимит на размер тела запроса (32МБ по умолчанию), и
+        digest-пул за неделю в него не влезает: 2143 чанка с 1024-мерным
+        dense-вектором, sparse и текстом дали 53МБ и 400 Bad Request
+        (поймано реальным прогоном, не гипотетически).
+        """
+        client = self._connect()
+        for start in range(0, len(chunks), _UPSERT_BATCH):
+            batch = chunks[start : start + _UPSERT_BATCH]
+            client.upsert(self._collection_name, points=[_point(c) for c in batch])
 
     def has_source(self, source_id: str) -> bool:
         """Есть ли уже чанки с этим source_id — кэш-хит для funnel (не читать повторно)."""
@@ -193,6 +248,59 @@ class QdrantStore(VectorStore):
             exact=True,
         )
         return result.count > 0
+
+    def load_pool(self, min_published_ts: float) -> list[dict[str, Any]]:
+        """Payload'ы всех точек с `published_ts >= min_published_ts`.
+
+        Digest-пул (agent/digest.py) восстанавливает по ним окно «за
+        последние N дней» прямо из индекса, вместо повторной выгрузки тех же
+        статей из arXiv на каждый запрос. Точки без `published_ts` (всё, что
+        индексировали `cli index`/funnel) под фильтр не попадают — пул строго
+        из того, у чего известна дата публикации.
+        """
+        client = self._connect()
+        if not client.collection_exists(self._collection_name):
+            return []
+        payloads: list[dict[str, Any]] = []
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                self._collection_name,
+                scroll_filter=models.Filter(
+                    must=[models.FieldCondition(key="published_ts", range=models.Range(gte=min_published_ts))]
+                ),
+                limit=_SCROLL_PAGE,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            payloads.extend(point.payload for point in points)
+            if offset is None:
+                break
+        return payloads
+
+    def oldest_published_ts(self) -> float | None:
+        """Самая ранняя `published_ts` в коллекции (None — таких точек нет).
+
+        Digest использует это, чтобы понять, покрывает ли кэш всё запрошенное
+        окно: если самая старая известная статья старше начала окна, то
+        нижняя граница окна уже в индексе и выгрузку из arXiv можно
+        останавливать досрочно, как только пошли уже известные статьи.
+        """
+        client = self._connect()
+        if not client.collection_exists(self._collection_name):
+            return None
+        points, _ = client.scroll(
+            self._collection_name,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="published_ts", range=models.Range(gte=0))]
+            ),
+            limit=1,
+            with_payload=["published_ts"],
+            with_vectors=False,
+            order_by=models.OrderBy(key="published_ts", direction=models.Direction.ASC),
+        )
+        return points[0].payload.get("published_ts") if points else None
 
     def _ensure_collection(self) -> str:
         client = self._connect()
