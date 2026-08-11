@@ -56,6 +56,8 @@ _SECTION_ALIASES: dict[str, str] = {
 DROP_CATEGORIES = {"references", "acknowledgments", "appendix"}
 
 _MD_HEADER_RE = re.compile(r"^(#{1,3})\s+(.*\S)\s*$")
+_URL_RE = re.compile(r"https?://[^\s<>\"{}|\\^`\[\]]+")
+_ABSTRACT_MARKER_RE = re.compile(r"^\s*(abstract|аннотация|резюме)\b", re.IGNORECASE | re.MULTILINE)
 _PDF_HEADER_RE = re.compile(
     r"^\s*(?:[0-9]+[.)]?\s*)?(" + "|".join(sorted(_SECTION_ALIASES, key=len, reverse=True)) + r")\s*$",
     re.IGNORECASE,
@@ -135,3 +137,66 @@ def extract_pdf_sections(path: str | Path) -> list[Section]:
                 stripped = raw_line.strip()
                 lines.append(f"## {stripped}" if _PDF_HEADER_RE.match(stripped) else raw_line)
     return extract_sections("\n".join(lines))
+
+
+def extract_pdf_header(path: str | Path, max_chars: int = 2000) -> str:
+    """Шапка первой страницы: всё до аннотации.
+
+    Именно здесь у статьи лежат авторы с аффилиациями и почтами — данных,
+    которых нет ни в arXiv API (там только имена), ни в OpenAlex для свежих
+    препринтов (не проиндексированы). Возвращается сырой текст, разбор
+    оставлен вызывающему (`agent/digest.py`).
+
+    Обрезается по первому вхождению "Abstract"/"Аннотация" и по `max_chars`:
+    если разметка нестандартная и маркер не нашёлся, лучше отдать первые
+    пару тысяч символов, чем всю страницу.
+    """
+    import fitz  # PyMuPDF, lazy import: опциональная зависимость
+
+    with fitz.open(path) as doc:
+        if doc.page_count == 0:
+            return ""
+        text = doc[0].get_text()
+
+    match = _ABSTRACT_MARKER_RE.search(text)
+    if match:
+        text = text[: match.start()]
+    return text[:max_chars].strip()
+
+
+def extract_pdf_links(path: str | Path) -> list[str]:
+    """Все URL статьи: сначала из link-аннотаций PDF, потом из текста.
+
+    Аннотации — основной источник и они надёжнее регулярки по тексту: при
+    извлечении текста PDF длинный URL сплошь и рядом разрывается переносом
+    строки, и склеить его обратно без догадок нельзя. LaTeX'овский \\url{} как
+    раз создаёт аннотацию, поэтому ссылки на репозитории из статей обычно
+    вытаскиваются точно. Регулярка добирает URL, набранные простым текстом,
+    без гиперссылки.
+
+    Порядок сохраняется (аннотации первыми), дубликаты убираются — вызывающий
+    код (agent/digest.py) фильтрует это до github/huggingface и показывает
+    пользователю как есть. Ссылки принципиально не отдаются на откуп LLM:
+    правдоподобный, но выдуманный URL репозитория — ровно тот вид
+    галлюцинации, который тут недопустим.
+    """
+    import fitz  # PyMuPDF, lazy import: опциональная зависимость
+
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(url: str) -> None:
+        cleaned = url.strip().rstrip(".,;)]}>'\"")
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            urls.append(cleaned)
+
+    with fitz.open(path) as doc:
+        for page in doc:
+            for link in page.get_links():
+                if link.get("uri"):
+                    add(link["uri"])
+        for page in doc:
+            for match in _URL_RE.finditer(page.get_text()):
+                add(match.group(0))
+    return urls

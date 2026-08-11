@@ -1,4 +1,10 @@
-from src.ingest.extract import extract_html_sections, extract_pdf_sections, extract_sections
+from src.ingest.extract import (
+    extract_html_sections,
+    extract_pdf_header,
+    extract_pdf_links,
+    extract_pdf_sections,
+    extract_sections,
+)
 
 _PAPER_MD = """# Заметка
 
@@ -79,3 +85,89 @@ def test_pdf_drops_references_and_acknowledgments(tmp_path):
     assert "acknowledgments" not in categories
     assert "abstract" in categories
     assert "introduction" in categories
+
+
+def test_extract_pdf_links_prefers_annotations_and_adds_plain_text_urls(tmp_path):
+    """Аннотации надёжнее регулярки: при извлечении текста длинный URL
+    сплошь и рядом рвётся переносом строки и склеить его нельзя."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Code: see our repository. Also https://huggingface.co/acme/model")
+    page.insert_link({
+        "kind": fitz.LINK_URI, "from": fitz.Rect(72, 60, 200, 80),
+        "uri": "https://github.com/acme/repo",
+    })
+    path = tmp_path / "paper.pdf"
+    doc.save(path)
+    doc.close()
+
+    links = extract_pdf_links(path)
+    assert links[0] == "https://github.com/acme/repo"          # аннотация первой
+    assert "https://huggingface.co/acme/model" in links        # текстовый URL добран
+
+
+def test_extract_pdf_links_dedupes_and_strips_trailing_punctuation(tmp_path):
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "See https://github.com/acme/repo.")
+    page.insert_link({
+        "kind": fitz.LINK_URI, "from": fitz.Rect(72, 60, 200, 80),
+        "uri": "https://github.com/acme/repo",
+    })
+    path = tmp_path / "paper.pdf"
+    doc.save(path)
+    doc.close()
+
+    assert extract_pdf_links(path) == ["https://github.com/acme/repo"]
+
+
+def test_extract_pdf_links_empty_for_pdf_without_links(tmp_path):
+    import fitz
+
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "No links here at all.")
+    path = tmp_path / "paper.pdf"
+    doc.save(path)
+    doc.close()
+
+    assert extract_pdf_links(path) == []
+
+
+def test_extract_pdf_header_stops_at_the_abstract(tmp_path):
+    """В шапке лежат авторы с аффилиациями — то, чего нет ни в arXiv API,
+    ни в OpenAlex для свежих препринтов."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Attention Is All You Need")
+    page.insert_text((72, 92), "Ashish Vaswani")
+    page.insert_text((72, 112), "Google Brain")
+    page.insert_text((72, 132), "Abstract")
+    page.insert_text((72, 152), "We propose a new architecture.")
+    path = tmp_path / "paper.pdf"
+    doc.save(path)
+    doc.close()
+
+    header = extract_pdf_header(path)
+    assert "Ashish Vaswani" in header
+    assert "Google Brain" in header
+    assert "We propose a new architecture" not in header  # тело статьи отрезано
+
+
+def test_extract_pdf_header_respects_max_chars(tmp_path):
+    """Маркер аннотации не нашёлся (нестандартная вёрстка) — отдаём начало
+    страницы, а не всю её."""
+    import fitz
+
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "A" * 500)
+    path = tmp_path / "paper.pdf"
+    doc.save(path)
+    doc.close()
+
+    assert len(extract_pdf_header(path, max_chars=100)) <= 100

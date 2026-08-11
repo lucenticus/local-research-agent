@@ -50,20 +50,18 @@ from __future__ import annotations
 
 import math
 import re
-import tempfile
-import urllib.request
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from .. import config
 from ..ingest.chunk import chunk_sections, chunk_text
-from ..ingest.extract import Section, extract_pdf_sections
+from ..ingest.extract import Section
 from ..providers import embed, llm
 from ..providers.mcp_client import content_to_text, get_single_tool
 from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
+from ..sources.pdf import fetch_pdf_sections
 from ..store.qdrant_store import Chunk, QdrantStore
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
@@ -203,19 +201,6 @@ def _triage(sub_question: SubQuestion, candidates: list[Candidate]) -> list[Cand
     return scoreable[: config.FUNNEL_TRIAGE_TOP_N]
 
 
-def _fetch_pdf_sections(pdf_url: str) -> list[Section]:
-    request = urllib.request.Request(pdf_url, headers={"User-Agent": "local-research-agent/0.1"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        body = response.read(config.FUNNEL_MAX_PDF_BYTES)
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(body)
-        tmp_path = Path(tmp.name)
-    try:
-        return extract_pdf_sections(tmp_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
 # Кэшируется на модуль (не на вызов) — get_mcp_tools() делает отдельный
 # connect/list_tools/disconnect round-trip (см. providers/mcp_client.py),
 # незачем платить его на каждый прочитанный кандидат. Сентинел "unset"
@@ -241,7 +226,7 @@ def _get_mcp_fetch_tool() -> Any:
 def _fetch_page_text_via_mcp(url: str) -> str | None:
     """Full page text via the MCP fetch server (mcp-server-fetch) — richer
     than the abstract-only fallback for non-PDF sources (web/Tavily
-    results). Best-effort like `_fetch_pdf_sections`: any failure (server
+    results). Best-effort like `fetch_pdf_sections`: any failure (server
     not installed, network, timeout) just returns None."""
     tool = _get_mcp_fetch_tool()
     if tool is None:
@@ -257,7 +242,7 @@ def _deep_read_sections(candidate: Candidate) -> list[Section]:
     pdf_url = candidate.meta.get("pdf_url")
     if pdf_url:
         try:
-            sections = _fetch_pdf_sections(pdf_url)
+            sections = fetch_pdf_sections(pdf_url)
             if sections:
                 return sections
         except Exception:
