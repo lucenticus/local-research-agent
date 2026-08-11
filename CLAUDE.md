@@ -53,8 +53,10 @@ feature tour; this file holds the standing engineering rules.
 
 ## Stack
 Qwen3.5-4B (Q4, MLX, own copy) · bge-m3 (dense+sparse) ·
-bge-reranker-v2-m3 (on demand) · Qdrant (Docker) · arXiv / Semantic
-Scholar / CrossRef / Wikipedia / web (+ GitHub via MCP, off by default) ·
+Qwen3-Reranker-0.6B (MLX, on demand — bge-reranker-v2-m3 was the original
+plan but conflicts with the transformers version mlx_lm needs, see
+`providers/rerank.py`) · Qdrant (Docker) · arXiv / Semantic Scholar /
+CrossRef / Wikipedia / web (+ GitHub via MCP, off by default) ·
 LangGraph (orchestration in `agent/loop.py`) · LangChain:
 `providers/langchain_llm.py`/`langchain_embeddings.py` wrap the resident MLX
 models (not a separate implementation) as `BaseChatModel`/`Embeddings`;
@@ -74,7 +76,18 @@ persistent connection isn't worth it at this scale). Built on it: an MCP
 fetch server as a deep-read fallback (`funnel.py`, off by default —
 `config.MCP_FETCH_ENABLED`), an MCP filesystem server for `index --mcp-dir`,
 and `mcp_server.py` exposing this agent's own `ask`/`research` as MCP tools
-over stdio (`mcp-serve`). See README's "MCP: tools this agent uses, and using this agent as a tool" section.
+over stdio (`mcp-serve`). See README's "MCP: both directions" section.
+
+Digest (`agent/digest.py`, `cli.py digest` + web UI tab): browse mode for
+fresh arXiv papers, deliberately NOT built on the funnel (no subquestion to
+be relevant to). With a topic it caches the whole window in its own Qdrant
+collection (`config.QDRANT_DIGEST_COLLECTION`) and ranks locally, hybrid
+search -> rerank. Per-paper deep analysis reads the PDF itself
+(`sources/pdf.py`): results/comparisons via bounded LLM, plus authors with
+affiliations, code links, GitHub stars (`sources/github.py`) and OpenAlex
+metadata (`sources/citations.py`). Facts that can be looked up are looked
+up, never guessed by the LLM — see the module docstrings for the concrete
+failures behind that rule.
 
 Tracing: `providers/tracing.py` sets the LangSmith env vars at process start
 (off by default — `config.LANGSMITH_TRACING_ENABLED` + `LANGSMITH_API_KEY`).
@@ -84,7 +97,9 @@ component above automatically via LangChain's callback system. See README's
 
 ## Running it
 ```
-docker compose up -d qdrant       # required — Qdrant vector store (see README)
-python -m src.cli index          # build the index from corpus/
-python -m src.cli ask "question"  # ask
+docker compose up -d qdrant           # required — Qdrant vector store (see README)
+python -m src.cli index                # build the index from corpus/
+python -m src.cli ask "question"       # local RAG
+python -m src.cli research "question"  # full pipeline
+python -m src.cli digest --query "topic"   # fresh arXiv papers
 ```

@@ -1,566 +1,370 @@
 # local-research-agent
 
 A local deep-research agent that runs entirely on-device (MacBook M4 Air,
-16GB, MLX). It searches arXiv, Semantic Scholar, CrossRef, Wikipedia, and
-the general web (Tavily or a local SearXNG instance), reads and cites what
-it finds, and self-checks its own answers before returning them. It can
-also reach further via MCP servers (page fetching, arbitrary local
-directories), and it exposes itself as an MCP server so other MCP clients
-can call it as a tool.
+16GB, MLX). It searches arXiv, Semantic Scholar, CrossRef, Wikipedia and the
+general web, reads and cites what it finds, and self-checks its answers
+before returning them. It also tracks fresh AI papers (`digest`), speaks MCP
+in both directions, and ships a web UI.
 
-The standing engineering rules (memory constraints, provider-seam
-convention, test policy) live in [CLAUDE.md](CLAUDE.md). This file
-describes the system as it stands today.
+Standing engineering rules (memory constraints, provider seams, test policy)
+live in [CLAUDE.md](CLAUDE.md). Design rationale lives in module docstrings —
+this file is the tour.
 
 ## Quickstart
 
 ```bash
 uv venv
 uv pip install -r requirements.txt
+docker compose up -d qdrant                  # required
 
-docker compose up -d qdrant   # Qdrant vector store — required, see below
-python -m src.cli index
-python -m src.cli ask "What is RAG?"
-
-cp .env.example .env   # optional: add TAVILY_API_KEY for broader web search
-docker compose up -d   # optional: local SearXNG fallback if no Tavily key
-python -m src.cli research "What approaches exist for KV-cache compression in transformers?"
-
-python -m src.cli digest   # what's new in AI research this week (arXiv, no question needed)
-
-python -m src.cli serve   # web UI at http://127.0.0.1:8000
-
-python -m src.cli mcp-serve   # MCP server (stdio): exposes ask/research as tools
+python -m src.cli index                       # build index from corpus/
+python -m src.cli ask "What is RAG?"          # local RAG, no internet
+python -m src.cli research "KV-cache compression approaches?"   # full pipeline
+python -m src.cli digest --query "diffusion models"             # fresh arXiv papers
+python -m src.cli serve                       # web UI at http://127.0.0.1:8000
+python -m src.cli mcp-serve                   # expose ask/research over MCP
 
 uv run pytest -q
 ```
+
+Optional: `cp .env.example .env` and add `TAVILY_API_KEY` for broader web
+search; otherwise `docker compose up -d searxng` gives a local fallback.
+
+## The three modes
+
+| | question | what it does | sources |
+|---|---|---|---|
+| `ask` | required | retrieval over the local index only | `corpus/` |
+| `research` | required | iterative discovery → deep read → cited answer | arXiv, S2, CrossRef, Wikipedia, web |
+| `digest` | optional | what's new in AI, ranked by topic if given | arXiv only |
 
 ## Architecture
 
 ```mermaid
 flowchart TB
     browser(["browser"])
-    mcpclient(["MCP client<br/>(Claude Code, etc.)"])
+    mcpclient(["MCP client"])
 
-    subgraph web["web/app.py (serve)"]
-        fastapi["FastAPI: background job<br/>+ polling"]
-    end
-
-    subgraph mcpsrv["mcp_server.py (mcp-serve)"]
-        mcptools["ask() / research()<br/>as MCP tools, stdio"]
-    end
-
-    subgraph cli["cli.py"]
-        index["index (+ --mcp-dir)"]
-        ask["ask"]
-        research["research"]
-    end
-
-    subgraph runner["agent/research_runner.py"]
-        rr["run_research()"]
-    end
-
-    subgraph providers["providers/ (resident or on-demand)"]
-        embed["embed.py<br/>bge-m3 dense, resident"]
-        llm["llm.py<br/>Qwen3.5-4B MLX, resident"]
-        rerank["rerank.py<br/>Qwen3-Reranker MLX,<br/>load→score→release"]
-        chatmlx["langchain_llm.py<br/>ChatMLX (BaseChatModel)<br/>wraps llm.py"]
-        lcembed["langchain_embeddings.py<br/>MLXBGEEmbeddings<br/>wraps embed.py"]
-    end
-
-    subgraph store["store/qdrant_store.py"]
-        lance[("Qdrant (Docker)<br/>dense + sparse (bge-m3)<br/>hybrid = RRF<br/>+ VectorStore/.as_retriever()")]
-    end
-
-    subgraph ingest["ingest/"]
-        extract["extract.py<br/>sections, drop refs/acks"]
-        chunk["chunk.py<br/>chunk_sections"]
+    subgraph entry["entry points"]
+        fastapi["web/app.py — FastAPI<br/>background job + polling"]
+        mcptools["mcp_server.py — ask/research<br/>as MCP tools (stdio)"]
+        cli["cli.py — index / ask /<br/>research / digest"]
     end
 
     subgraph agent["agent/"]
-        state["state.py<br/>ResearchState (+ history)"]
-        planner["planner.py<br/>question → subquestions"]
-        funnel["funnel.py<br/>discovery→triage→deep read"]
-        loop["loop.py<br/>LangGraph StateGraph:<br/>plan→run_pass loop→<br/>check_faithfulness→finalize"]
-        synth["synthesize.py<br/>LCEL chain, [n] citations"]
-        eval["evaluate.py<br/>coverage + faithfulness"]
-        runner["research_runner.py<br/>run_research / run_followup"]
+        runner["research_runner.py<br/>run_research / run_followup / retrieve"]
+        loop["loop.py — LangGraph:<br/>plan → run_pass* → check → finalize"]
+        funnel["funnel.py<br/>discovery → triage → deep read"]
+        planner["planner.py — deterministic"]
+        synth["synthesize.py — LCEL, [n] citations"]
+        evaluate["evaluate.py — coverage + faithfulness"]
+        digest["digest.py<br/>pool → hybrid → rerank → PDF analysis"]
     end
 
-    subgraph sources["sources/ (metadata only)"]
-        arxiv["arxiv.py"]
-        s2["semantic_scholar.py"]
-        crossref["crossref.py"]
-        wikipedia["wikipedia.py"]
-        websearch["web.py / tavily.py<br/>(SearXNG or Tavily, see below)"]
-        tools["langchain_tools.py<br/>StructuredTool per source"]
+    subgraph providers["providers/"]
+        llm["llm.py — Qwen3.5-4B MLX<br/>RESIDENT"]
+        embed["embed.py — bge-m3 dense+sparse<br/>RESIDENT"]
+        rerank["rerank.py — Qwen3-Reranker<br/>load→score→RELEASE"]
     end
 
-    subgraph mcp["providers/mcp_client.py<br/>(sync bridge, see below)"]
-        mcpfetch["mcp-server-fetch<br/>(deep-read fallback)"]
-        mcpfs["MCP filesystem server<br/>(index --mcp-dir)"]
+    subgraph sources["sources/"]
+        discovery["arxiv · semantic_scholar · crossref<br/>wikipedia · web/tavily<br/>(metadata only)"]
+        pdf["pdf.py — fetch + sections<br/>+ links + author header"]
+        citations["citations.py — OpenAlex"]
+        gh["github.py — stars"]
+    end
+
+    subgraph store["store/qdrant_store.py — Qdrant (Docker)"]
+        main[("main + research<br/>dense+sparse, RRF hybrid")]
+        pool[("digest_pool<br/>cached week of papers")]
     end
 
     browser <--> fastapi
     mcpclient <--> mcptools
-    fastapi --> runner
+    cli --> runner & digest
+    fastapi --> runner & digest
     mcptools --> runner
-    research --> runner
-    runner --> loop
-    runner --> synth
 
-    index --> ingest --> lance
-    index --> embed
-    index -.-> mcpfs
-    ask --> lance & rerank & synth
-    lance --> lcembed
-    loop --> planner & funnel & synth & eval
-    funnel --> tools --> sources
-    funnel -.-> mcpfetch
-    funnel --> ingest
-    funnel --> lance
-    loop --> lance
-    eval --> rerank
-    synth --> chatmlx --> llm
+    runner --> loop --> funnel & planner & synth & evaluate
+    funnel --> discovery & pdf --> main
+    runner --> main
+    evaluate --> rerank
+
+    digest --> discovery
+    digest --> pool
+    digest --> rerank
+    digest --> pdf & citations & gh
+
+    synth --> llm
+    main --> embed
+    pool --> embed
+
+    classDef resident stroke:#2e7d32,stroke-width:3px
+    classDef ondemand stroke:#e65100,stroke-width:3px,stroke-dasharray:5 4
+    classDef cache stroke:#1565c0,stroke-width:3px
+    class llm,embed resident
+    class rerank ondemand
+    class pool cache
 ```
 
-Key memory invariant: `embed`/`llm` stay resident; `rerank` loads and
-releases on every call — two heavy models are never resident at once next
-to the reranker. `langchain_llm.py`/`langchain_embeddings.py` are thin
-LangChain-interface wrappers over the same resident `llm.py`/`embed.py`
-instances, not separate model copies.
+Green = resident for the process lifetime · dashed orange = loaded and
+released per call · blue = cache that survives between runs.
 
-## Local RAG: `index` / `ask`
+**The memory invariant** (§1 CLAUDE.md): `llm` and `embed` stay resident;
+`rerank` loads → scores → releases on every call. Two heavy models are never
+resident at once. LangChain wrappers (`langchain_llm.py`,
+`langchain_embeddings.py`) are thin interfaces over those same instances, not
+second copies.
 
-The simple path: build an embedding index from local files, then ask
-questions grounded in that index only (no internet access).
+**The honesty invariant**: when a fact isn't available, the agent says so
+instead of guessing. Missing OpenAlex record → "не проиндексировано", not
+`0` citations. No affiliation in the PDF → a dash, not a plausible
+university. GitHub API rate-limited → no star count, not `0` stars.
 
-- `ingest/extract.py` — section-aware extraction (markdown/HTML/PDF), drops
-  References/Bibliography/Acknowledgments/Appendix sections.
-- `ingest/chunk.py` — `chunk_sections` chunks along section boundaries so a
-  chunk never straddles two sections.
-- `store/qdrant_store.py` — hybrid search (`search_hybrid`): dense vector +
-  sparse vector (bge-m3's own lexical weights, same forward pass as dense —
-  see `providers/embed.py`), merged via Qdrant's Query API RRF fusion.
-  `search_dense` is kept as a baseline for comparison. Runs against a real
-  Qdrant server (Docker, `docker compose up -d qdrant`) — a deliberate
-  choice over Qdrant's embedded/serverless mode, see `QdrantStore`'s
-  docstring. `QdrantStore` also implements
-  `langchain_core.vectorstores.VectorStore` (`similarity_search`/
-  `add_texts`/`.as_retriever()`) as an additive layer on top of the same
-  hybrid search — `agent/research_runner.retrieve()` (the shared retrieval
-  step for both `ask` and `research`) goes through `.as_retriever()`.
-- `providers/rerank.py` — `mlx-community/Qwen3-Reranker-0.6B-4bit` (pure
-  MLX, 331MB). `ask` takes `RERANK_CANDIDATES_K` hybrid-search hits, the
-  reranker loads, scores, releases, and returns the top
-  `TOP_K_RETRIEVE`. Toggle off with `config.RERANK_ENABLED = False`.
-- `agent/synthesize.py` — an LCEL chain (`prompt | ChatMLX() |
-  StrOutputParser()`) over the same resident LLM, not a second model
-  instance.
+## `index` / `ask` — local RAG
 
 ```bash
-python -m src.cli index
+python -m src.cli index                  # .txt/.md/.html/.pdf from corpus/
+python -m src.cli index --mcp-dir ~/notes   # + any dir via MCP filesystem server
 python -m src.cli ask "What is RAG?"
 ```
 
-`index` reads `.txt`/`.md`/`.html`/`.pdf` files from `corpus/` (the repo
-ships a small sample corpus: three notes on RAG/vector DBs/local LLMs, plus
-one sample "paper" with Abstract/Introduction/Method/Results/Conclusion/
-References/Acknowledgments to exercise the reference-stripping logic).
+- `ingest/extract.py` — section-aware extraction; drops References/
+  Acknowledgments/Appendix. `ingest/chunk.py` chunks along section
+  boundaries so a chunk never straddles two sections.
+- `store/qdrant_store.py` — hybrid search: dense + sparse (bge-m3's own
+  lexical weights, same forward pass), merged by Qdrant's RRF fusion. Also
+  implements LangChain's `VectorStore`, so `retrieve()` goes through
+  `.as_retriever()`.
+- `providers/rerank.py` — takes `RERANK_CANDIDATES_K` hits, returns
+  `TOP_K_RETRIEVE`. Off via `config.RERANK_ENABLED`.
 
-## Deep research: `research`
+## `research` — deep research
 
 ```bash
-python -m src.cli research "What approaches exist for KV-cache compression in transformers?"
+python -m src.cli research "What approaches exist for KV-cache compression?"
 ```
 
-Unlike `ask`, `research` actively goes out and finds new material instead
-of only searching a pre-built index:
+Unlike `ask`, this goes out and finds new material:
 
-- `agent/state.py` — `ResearchState`: subquestions, candidates, `read_ids`,
-  findings, budget.
-- `sources/arxiv.py`, `sources/semantic_scholar.py`, `sources/crossref.py`,
-  `sources/wikipedia.py`, `sources/web.py` / `sources/tavily.py` —
-  metadata-only discovery, all keyless except the web source. arXiv/
-  Semantic Scholar cover preprints, CrossRef adds published/journal work
-  (real citation counts via `is-referenced-by-count`), Wikipedia covers
-  general/background subquestions the others don't. The web source picks
-  Tavily if `TAVILY_API_KEY` is set, otherwise falls back to a local
-  SearXNG instance (see below). `ArxivSource(categories=...)` — used by
-  `default_sources()` with `config.ARXIV_AI_CATEGORIES` (cs.AI/cs.LG/cs.CL/
-  cs.CV/cs.NE/stat.ML) — AND's a `cat:` filter into the keyword query so
-  ambiguous ML terms ("attention", "transformer") don't pull in physics/
-  neuroscience/econ papers that happen to use the same words.
-- `agent/planner.py` — question → subquestions via a deterministic
-  heuristic, not an LLM call (small local models are unreliable
-  multi-step planners, so planning logic lives in code).
-- `agent/funnel.py` — discovery → embedding-based triage → deep read: PDF
-  fetch + section extraction for arXiv; for other sources, full page text
-  via an MCP fetch server if enabled (`config.MCP_FETCH_ENABLED`, off by
-  default — see "MCP: tools this agent uses" below), else the abstract as a
-  fallback. Non-English subquestions get translated to a short English
-  search query via a bounded LLM call first — arXiv/Semantic Scholar
-  otherwise return zero results for Russian queries. Each source is
-  invoked through a LangChain `StructuredTool`
-  (`sources/langchain_tools.py`), not `Source.discover()` directly — the
-  discovery/parsing logic itself is unchanged, only the call boundary is a
-  standard LangChain tool interface.
-- `agent/loop.py` — the iterative controller, implemented as a LangGraph
-  `StateGraph` (`plan` → `run_pass` loop → `check_faithfulness` →
-  `finalize`). A subquestion is "covered" when retrieval clears a reranker
-  score threshold (`FUNNEL_MIN_RERANK_SCORE = 0.5`) across at least
-  `FUNNEL_MIN_SOURCES_TO_COVER = 3` distinct sources; each retry pass asks
-  sources for more candidates than the last.
+- **Planner** — question → subquestions in deterministic code, not an LLM
+  call (a 4B model is an unreliable multi-step planner).
+- **Funnel** (`agent/funnel.py`) — discovery → embedding triage → deep read.
+  Only survivors get their full text fetched and indexed. Non-English
+  subquestions are translated to a short English query first (arXiv and S2
+  return nothing for Russian).
+- **Loop** (`agent/loop.py`) — a LangGraph `StateGraph`: `plan` →
+  `run_pass`* → `check_faithfulness` → `finalize`. A subquestion is covered
+  when retrieval clears `FUNNEL_MIN_RERANK_SCORE` across
+  `FUNNEL_MIN_SOURCES_TO_COVER` distinct sources.
+- **Self-evaluation** (`agent/evaluate.py`) — citation coverage plus
+  faithfulness (each cited claim scored against its source text by the
+  existing reranker, not a separate NLI model). Low faithfulness reopens
+  subquestions for one more forced-discovery pass within budget.
 
-Search breadth and budget are tunable in `config.py`:
-`FUNNEL_DISCOVERY_LIMIT_PER_SOURCE` (candidates requested per source),
-`FUNNEL_TRIAGE_TOP_N` (how many go to deep read), and
+**Triage score** = semantic similarity + a log-scaled citation boost
+(`CITATION_BOOST_SCALE`) + an exponentially-decaying recency boost
+(`RECENCY_BOOST_SCALE`, `RECENCY_HALF_LIFE_DAYS`). The two boosts are summed,
+not traded off: a brand-new paper structurally can't have citations yet, so
+citation boost alone would bury exactly what "what's new" needs.
+
+**Follow-ups.** After the first answer the conversation continues on the same
+`ResearchState` — the CLI drops into a prompt (`подробнее N` / `more N`
+forces a deep read of candidate N), the web UI shows a "Уточнить" box and a
+"подробнее" button per candidate. Prior reads, embeddings and Qdrant rows are
+reused; only the new subquestions get budget.
+
+**Visibility.** Both UIs keep the progress log next to the answer and a table
+of *every* discovered candidate — triage score, citations, source, link, and
+a checkmark for what was actually read.
+
+Budget knobs: `FUNNEL_DISCOVERY_LIMIT_PER_SOURCE`, `FUNNEL_TRIAGE_TOP_N`,
 `DEFAULT_BUDGET_MAX_ITERATIONS` / `_MAX_DEEP_READS` / `_MAX_SECONDS`.
 
-### Citation-aware triage
+## `digest` — what's new in AI
 
-- Semantic Scholar reports `citationCount` directly; arXiv doesn't, so it's
-  backfilled via the [OpenAlex](https://openalex.org) Works API
-  (`sources/citations.py`, no key required). The triage score is semantic
-  similarity to the subquestion plus a small log-scaled citation boost
-  (`config.CITATION_BOOST_SCALE`) — a tie-breaker between similarly
-  relevant candidates, not a substitute for relevance.
-- **Recency boost** (`agent/funnel.py::_recency_boost`,
-  `config.RECENCY_BOOST_SCALE`/`RECENCY_HALF_LIFE_DAYS`) — an independent,
-  exponentially-decaying boost from `published_date` (currently only arXiv
-  populates it). Citation boost alone structurally buries brand-new papers
-  — they can't have accumulated citations yet — which fights the goal of
-  actually surfacing what's new; the two boosts are summed, not traded off
-  against each other, so a fresh uncited paper and an old well-cited one
-  each get scored on their own axis.
-- `url` and `citation_count` flow through the whole pipeline (discovery →
-  deep read → Qdrant → retrieval) and show up as clickable links (CLI:
-  a plain URL most terminals auto-link; web UI: a real `<a href>` with a
-  citation-count badge when known).
-
-### Self-evaluation
-
-`agent/evaluate.py` checks the generated answer before it ships:
-
-- **Citation coverage** — share of claim-sentences carrying at least one
-  `[n]`.
-- **Faithfulness** — share of cited claims actually supported by the text
-  of their cited source, checked via `providers/rerank.score_pairs`
-  (reuses the existing reranker instead of a separate NLI model or another
-  LLM call).
-
-`agent/loop.py` wires this in: once every subquestion is covered, a draft
-answer is scored, and if faithfulness is low, subquestions reopen for one
-more forced-discovery pass within budget — `force_discovery` guarantees a
-real new search happens on that pass even if the persistent index would
-otherwise consider the subquestion already "covered" by stale content from
-an earlier question.
-
-### Process visibility
-
-The answer isn't a black box — after completion, the page/CLI output keeps:
-
-- **Progress log** — stays visible next to the answer (not hidden once
-  done): how many subquestions, how many iterations, what got read.
-- **All discovered candidates** — a table of every candidate the funnel
-  found (not just the ones cited in the final answer), sorted by triage
-  score: score, citation count, source (`arxiv`/`semantic_scholar`/`web`),
-  a clickable link, and a checkmark if it was actually deep-read
-  (`agent/research_runner.py::CandidateSummary`).
-
-### Follow-up questions and "tell me more"
-
-`research` isn't a single question-answer round-trip — after the first
-answer, the conversation keeps going and reuses the same `ResearchState`
-(`agent/research_runner.run_followup`) instead of starting over:
-
-- **CLI** — drops into an interactive prompt after the first answer. Type
-  a follow-up question directly, or `подробнее N` / `more N` to force a
-  deep-read of the Nth candidate from the printed list and get a focused
-  answer about it. Empty line or Ctrl-D exits.
-- **Web UI** — a "Уточнить" box appears under each answer for free-text
-  follow-ups, and every row in the candidates table has a "подробнее"
-  button that does the same forced deep-read. Every turn appends its own
-  panel instead of overwriting the previous one, so the whole exchange
-  stays visible.
-- Already-read candidates, embeddings, and Qdrant rows from earlier turns
-  are reused as-is (a real cache hit, not a rebuild) — only the new
-  follow-up's own subquestions get budget and can trigger new discovery;
-  `synthesize()` is given the prior Q&A pairs as history so "what about
-  X"-style questions resolve correctly.
-
-## Digest: `digest` — what's new in AI research
-
-`research`/`ask` answer a specific question; `digest` is the opposite —
-browse, not Q&A: "what got published in the last N days" across
-`config.ARXIV_AI_CATEGORIES` (cs.AI/cs.LG/cs.CL/cs.CV/cs.NE/stat.ML by
-default), sorted by submission date, no relevance filtering against a
-question because there isn't one. Available both as a CLI command and as
-the "Дайджест: свежие статьи" tab in the web UI (see below).
+Browse, not Q&A. Deliberately not built on the funnel: the funnel exists to
+serve a subquestion, and a digest has no question to be relevant *to*.
 
 ```bash
-python -m src.cli digest                                   # last 7 days, default categories
-python -m src.cli digest --days 3 --category cs.CL          # narrower window/category
-python -m src.cli digest --limit 30 --no-summary             # more items, skip the LLM overview
-python -m src.cli digest --query "diffusion models"          # only recent papers matching a topic
+python -m src.cli digest                            # last 7 days, 20 newest
+python -m src.cli digest --days 3 --category cs.CL   # narrower window
+python -m src.cli digest --query "diffusion models"  # top-5 most relevant to a topic
+python -m src.cli digest --query "MoE" --deep        # + per-paper deep analysis
 ```
 
-Deliberately not built on `agent/funnel.py`/`agent/loop.py` — those exist
-to answer a specific subquestion (discover → triage-by-relevance → deep
-read); a digest has no question to be relevant *to*, so running it through
-the funnel would mean inventing a fake query and then discarding freshness
-information the funnel doesn't track. `sources/arxiv.py::ArxivSource.recent()`
-is a separate, simpler path: `sortBy=submittedDate`, category filter, and an
-*optional* `query` — when given, AND'd into the same search_query as the
-categories, same keyword-tokenization as `discover()`, but still sorted by
-date, not relevance: `digest --query X` means "what's new about X", not
-"what's most relevant to X" (that's what `research`/`ask` are for).
+### Without `--query`: newest N papers
 
-Output is a plain list (title, authors, date, link — no deep read, no
-indexing into Qdrant) plus an optional short LLM-written overview of themes
-across the batch (`config.DIGEST_SUMMARIZE`, on by default) — explicitly
-labeled as a generated overview in the output, not a cited/faithfulness-
-checked answer like `research()`'s.
+Straight date-sorted listing plus an optional LLM overview of themes
+(`DIGEST_SUMMARIZE`, explicitly labelled as a generated overview, not a cited
+answer).
 
-### Deep analysis: `--deep`
+### With `--query`: top-5 most relevant
 
-Off by default — per-paper analysis instead of just a list:
+Ranking happens **locally**, in three stages, because the obvious approach
+didn't survive contact with reality:
+
+1. **Fetch the whole window.** All papers for the period, paginated
+   (~2100 for 7 days across the default categories). Keywords are *not*
+   AND'd into the arXiv query — that combination (keywords + six categories
+   OR'd) timed out on real queries. Category-only is cheap and predictable.
+2. **Hybrid search** narrows the pool to `DIGEST_QUERY_HYBRID_K` (20) using
+   the same dense+sparse retrieval as `ask`/`research`.
+3. **Rerank** those 20 down to `DIGEST_QUERY_TOP_K` (5).
+
+Reranking the full pool directly would take tens of minutes — the reranker is
+sequential, one forward pass per paper (~0.15s), while embedding the same
+pool in batches is far cheaper.
+
+**Pool caching.** The window is cached in its own Qdrant collection
+(`digest_pool`) — both the embeddings and the paper metadata. A repeat query
+restores the pool from the index and asks arXiv only for papers published
+since last time: results are date-descending, so the first fully-known page
+means "caught up". In practice this is one request instead of ~22 (0.5s
+instead of 82s). Early stopping is only allowed when the cache provably
+reaches past the window's far edge — otherwise (first run, or a widened
+`--days`) the window is fetched in full.
+
+### `--deep` — per-paper analysis
+
+Capped at `DIGEST_DEEP_MAX_ITEMS` regardless of `--limit`; ~30s per paper.
+In the web UI it's a **"Детальный анализ" button on each card** with its own
+progress, rather than something applied to the whole digest at once.
+
+Per paper:
+
+- **Russian summary** — bounded LLM call on title + abstract.
+- **PDF analysis** (`DIGEST_PDF_ANALYSIS`) — the full text is fetched
+  (`sources/pdf.py`), split into sections, and the results/discussion/
+  conclusion are fed to a bounded LLM call under a hard context cap
+  (`DIGEST_PDF_CONTEXT_CHARS`, §1: context bloat inflates the KV-cache) to
+  produce **main results, comparisons with baselines, and limitations**.
+- **Authors with affiliations** — parsed from the PDF's first-page header.
+- **Code and models** — github/gitlab/bitbucket/huggingface/colab links,
+  with **GitHub star counts** (`sources/github.py`).
+- **Citations, venue, author h-index** — from OpenAlex
+  (`sources/citations.py`), batched into one request per paper.
+
+Failures are surfaced, not hidden: no PDF → "не удалось разобрать"; no
+OpenAlex record (usual for week-old preprints) → "ещё не проиндексировано".
+
+**Where the data comes from matters here**, and three decisions are load-bearing:
+
+- **Affiliations come from the PDF, never from a name lookup.** arXiv's API
+  doesn't expose affiliations at all, and OpenAlex hasn't indexed fresh
+  preprints. Guessing via OpenAlex author-search was tried and rejected:
+  searching "Ashish Vaswani" returns three different people with h-index 29,
+  5 and 0. The PDF header has the real thing, so the LLM is used there only
+  as a *parser* of text that already contains the answer — not as a source of
+  knowledge. (Prompting needed worked examples: on a bare instruction the 4B
+  model kept dropping a shared affiliation printed below the author list.)
+  When an author genuinely has no affiliation in the paper, the output is a
+  dash.
+- **Links are extracted deterministically**, from PDF link annotations plus a
+  text regex — never from the LLM. A plausible-but-invented repository URL is
+  exactly the failure mode this project refuses. Links to *other people's*
+  PRs and commits are filtered out: a benchmark paper cites dozens of them as
+  its dataset, and they are not the paper's own code.
+- **`0` and "unknown" stay distinct** everywhere — a brand-new repo with 0
+  stars and a rate-limited API are different facts.
+
+## Web UI: `serve`
 
 ```bash
-python -m src.cli digest --deep --limit 5
+python -m src.cli serve [--port 8080]
 ```
 
-For each paper (capped at `config.DIGEST_DEEP_MAX_ITEMS`, independent of
-`--limit` — this is materially slower, one extra LLM call and one extra
-network lookup per paper):
+FastAPI plus one plain-JS page (no build step). Long runs go to a background
+thread and the client polls `GET /api/jobs/{id}` — no SSE/WebSockets for a
+single local user. One heavy job at a time (16GB); a second request gets
+`409`, not a silent queue. Digest jobs share that same slot.
 
-- A Russian-language summary (bounded LLM call on just that paper's title +
-  abstract, told explicitly not to add facts beyond the given text).
-- Real citation count, venue, and per-author institution + h-index, via
-  `sources/citations.py::lookup_paper_details` (OpenAlex, no key needed —
-  same title-search-plus-similarity-check pattern already used for citation
-  backfill, plus a batched `/authors?filter=id:A1|A2|...` call for h-index
-  so it's one extra request per paper, not one per author).
+Two tabs — **Исследование** and **Дайджест: свежие статьи**. The digest tab
+has a topic field, day/limit/category controls, and a per-card "Детальный
+анализ" button. LLM output is rendered as real HTML (headings, lists,
+emphasis) built as DOM nodes rather than injected as markup — the text comes
+from a model and is never treated as trusted HTML.
 
-**On author affiliations specifically** (this was asked for explicitly):
-arXiv's own API doesn't expose them at all. Guessing them from an author's
-name via OpenAlex's author-search was tried and rejected — searching
-"Ashish Vaswani" by name alone returns three different people with h-index
-29, 5, and 0; confidently attributing the wrong one's stats to a paper's
-real author is worse than not showing anything. Author details here always
-come from the *paper's own* OpenAlex authorship record, which disambiguates
-correctly — so brand-new papers (the common case for a "last 7 days"
-digest) usually show `details: None` ("ещё не проиндексировано") rather
-than a citation count of 0 or a guessed institution: OpenAlex has real
-ingestion lag from arXiv, and that lag is honestly surfaced, not hidden.
+## MCP: both directions
 
-## MCP: tools this agent uses, and using this agent as a tool
+`providers/mcp_client.py` is a sync bridge over the async-only
+`langchain-mcp-adapters`; each call opens a short-lived session.
 
-This agent is both an **MCP client** (it can call out to other MCP servers
-for extra capabilities) and an **MCP server** (other MCP clients — Claude
-Code, Claude Desktop, etc. — can call it).
-
-`providers/mcp_client.py` is the shared piece: a sync bridge over
-`langchain-mcp-adapters` (async-only) — the rest of the codebase is
-synchronous throughout, so this is the one place that spins an event loop.
-`get_mcp_tools(connections)` connects to an MCP server just long enough to
-list its tools, then returns them re-wrapped so `.invoke()` works from
-plain sync code; each actual call opens its own short-lived session (the
-library's model, not a persistent connection — fine at this project's
-scale, a single local user).
-
-### MCP servers this agent calls out to (client side)
-
-- **Deep-read fallback via MCP fetch** (`funnel.py`, `config.MCP_FETCH_ENABLED`,
-  **off by default**) — for non-arXiv candidates, fetches the full page
-  text through [`mcp-server-fetch`](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
-  (spawned on demand via `uvx`) instead of settling for the short abstract.
-  Off by default because it's an extra external dependency (`uvx` +
-  network egress per candidate) beyond this project's own HTTP clients —
-  enable it once `uvx` is available:
-  ```bash
-  uvx --from mcp-server-fetch --with "mcp<2" mcp-server-fetch --help   # sanity check
-  ```
-  then set `config.MCP_FETCH_ENABLED = True`. (Pinned to `mcp<2`: the
-  `mcp-server-fetch` release at the time of writing imports a name that
-  was renamed in `mcp` 2.0, confirmed by a real crash on this machine.)
-- **`index --mcp-dir <path>`** — pulls `.txt`/`.md`/`.html`/`.htm` files
-  from any directory on disk through the
-  [MCP filesystem server](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)
-  (`npx`, no install step), in addition to `corpus/`. Repeatable:
-  ```bash
-  python -m src.cli index --mcp-dir ~/Documents/research-notes --mcp-dir ~/Downloads/papers
-  ```
-  PDFs aren't supported through this path yet — `extract_pdf_sections`
-  needs a real filesystem path, and PDFs under an indexed directory can
-  just be read directly instead of round-tripping through MCP.
-- **GitHub as a source** (`sources/github_mcp.py`, `config.GITHUB_MCP_ENABLED`,
-  **off by default**) — repository search via the official
-  [GitHub MCP server](https://github.com/github/github-mcp-server) (Docker),
-  for subquestions about a specific library/tool that papers/encyclopedic
-  sources don't cover. `stargazers_count` feeds the same citation-boost
-  triage as papers. Needs `GITHUB_PERSONAL_ACCESS_TOKEN` in `.env`
-  (read-only scopes are enough); without it `discover()` no-ops without
-  touching Docker. Off by default for the same reason as MCP fetch — a
-  Docker container spin-up per call is real per-question latency to pay
-  unconditionally. Note: its repo search matches best against short
-  keyword queries, not full natural-language questions (found on a real
-  run — see the module docstring).
-
-### Using this agent as an MCP server
-
-`python -m src.cli mcp-serve` runs `mcp_server.py` over stdio, exposing two
-tools — `ask` (local RAG over `corpus/`, no internet) and `research` (the
-full deep-research pipeline, can take a couple of minutes). Both reuse the
-exact `agent/research_runner.py` functions the CLI and web UI already call
-— no separate reimplementation.
-
-To register it with **Claude Code** (project- or user-level `.mcp.json`):
+**As a server** — `python -m src.cli mcp-serve` exposes `ask` and `research`
+over stdio, reusing the same `research_runner` functions as the CLI. Register
+with Claude Code / Claude Desktop:
 
 ```json
 {
   "mcpServers": {
     "local-research-agent": {
-      "command": "/absolute/path/to/local-research-agent/.venv/bin/python",
+      "command": "/abs/path/.venv/bin/python",
       "args": ["-m", "src.cli", "mcp-serve"],
-      "cwd": "/absolute/path/to/local-research-agent"
+      "cwd": "/abs/path/local-research-agent"
     }
   }
 }
 ```
 
-For **Claude Desktop**, add the same `local-research-agent` entry under
-`mcpServers` in its config file (`~/Library/Application Support/Claude/claude_desktop_config.json`
-on macOS), then restart the app. Either way, use the venv's own Python
-(not a bare `python`/`python3`) so the MCP process sees this project's
-installed dependencies without needing an active shell activation.
+Use the venv's own Python so the process sees this project's dependencies.
 
-## Web search: Tavily (recommended) or local SearXNG
+**As a client** — all off by default, since each adds an external process or
+network dependency per call:
 
-`agent/research_runner.py::default_sources()` picks the web source
-automatically:
+- `MCP_FETCH_ENABLED` — full page text for non-arXiv candidates via
+  `mcp-server-fetch` (`uvx`). Pin `mcp<2`; the current release imports a name
+  renamed in 2.0 (confirmed by a real crash here).
+- `index --mcp-dir <path>` — index any directory through the MCP filesystem
+  server (`npx`). PDFs go through the direct path instead.
+- `GITHUB_MCP_ENABLED` — repo search via the official GitHub MCP server
+  (Docker), needs `GITHUB_PERSONAL_ACCESS_TOKEN`. Matches short keyword
+  queries far better than natural-language questions.
 
-- **`TAVILY_API_KEY` set** (in `.env`, see `.env.example`) → `sources/tavily.py`,
-  a managed search API with no third-party engine reliability problems.
-  Gives noticeably broader, more authoritative coverage in practice.
-- **No key** → `sources/web.py`, a local [SearXNG](https://docs.searxng.org/)
-  instance in Docker — no key, no rate limits of its own, but some of its
-  underlying engines (DuckDuckGo, Brave) get blocked by their own
-  providers (CAPTCHA/rate-limit) even through a local proxy.
+## Web search: Tavily or SearXNG
 
-```bash
-cp .env.example .env
-# put TAVILY_API_KEY=... in .env — free tier is roughly 1000 requests/month
-```
-
-Without a Tavily key, use local SearXNG instead:
-
-```bash
-docker compose up -d searxng  # start (once, runs in the background) — qdrant is a separate service, see Quickstart
-docker compose down           # stop everything (qdrant + searxng)
-curl "http://localhost:8888/search?q=test&format=json"   # sanity check
-```
-
-Without `docker compose up -d` running, `WebSource.discover()` just
-returns an empty list — `research` doesn't crash, the funnel carries on
-with whatever arXiv/Semantic Scholar found.
-
-## Web UI: `serve`
-
-```bash
-python -m src.cli serve                    # http://127.0.0.1:8000
-python -m src.cli serve --port 8080         # different port
-```
-
-FastAPI plus a single plain-JS HTML page (no build step, no Node/npm). A
-`research()` run can take minutes (real models, external APIs), so it runs
-in a background thread; the client polls `GET /api/jobs/{id}` once a
-second rather than using SSE/WebSockets — unnecessary complexity for a
-single local user. Only one job runs at a time (loading multiple heavy
-models concurrently isn't safe on 16GB) — a second request while one is
-running gets `409`, not a silent queue.
-
-Two tabs: **Исследование** (`research`/`ask`, described above) and
-**Дайджест: свежие статьи** — the `digest` CLI command's browse mode, with
-a topic field (optional — same `--query` as the CLI), day-window/limit/
-category controls, a "без обзора тем" checkbox to skip the LLM summary, and
-a "глубокий анализ" checkbox for the `--deep` per-paper analysis (Russian
-summary + OpenAlex citation/venue/author details, rendered per card).
-Same job+polling pattern (`POST /api/digest`,
-`GET /api/digest/{id}`), a separate `DigestJob`/`_digest_jobs` pair (no
-session/follow-up concept for a digest), but sharing the same
-`_current_job_id` concurrency slot as research jobs — digest also calls the
-resident LLM for its overview, so the "one heavy job at a time" invariant
-covers both.
+`default_sources()` picks automatically: `TAVILY_API_KEY` in `.env` →
+Tavily (broader, more reliable); otherwise a local SearXNG in Docker
+(`docker compose up -d searxng`), whose upstream engines sometimes get
+CAPTCHA'd. With neither, web discovery returns empty and the funnel carries
+on with the academic sources.
 
 ## Tracing: LangSmith
 
-Off by default (`config.LANGSMITH_TRACING_ENABLED = False`) — not a
-latency/dependency concern like the MCP flags above, but "don't ship
-question text + retrieved chunks + synthesized answers to a third-party
-cloud service without an explicit opt-in".
+Off by default — enabling ships question text, retrieved chunks and answers
+to a third-party service. Set `LANGSMITH_API_KEY` in `.env` and
+`config.LANGSMITH_TRACING_ENABLED = True`; `providers/tracing.py` sets the
+env vars once at process start and nothing else touches LangSmith.
 
-To enable: get a key at [smith.langchain.com](https://smith.langchain.com),
-add `LANGSMITH_API_KEY=...` to `.env`, and set
-`config.LANGSMITH_TRACING_ENABLED = True`. `providers/tracing.py` then sets
-the env vars LangChain/LangSmith read (`LANGSMITH_TRACING`,
-`LANGSMITH_PROJECT`) once at process start (`cli.py`, `web/app.py`,
-`mcp_server.py`) — nothing else in the codebase talks to LangSmith
-directly.
+Because almost everything already routes through LangChain/LangGraph, one
+switch instruments the whole pipeline: a `research()` call appears as a
+single trace tree (graph nodes, every source tool call, retrieval, synthesis)
+with inputs/outputs/latency.
 
-Because this project already routes almost everything through
-LangChain/LangGraph (see the Stack section in `CLAUDE.md`: `ChatMLX`, the
-LCEL synthesis chain, `QdrantStore` as a `VectorStore`, each `Source`
-wrapped as a `StructuredTool`, MCP tools, and the `agent/loop.py` research
-graph itself), turning tracing on instruments the whole pipeline at once —
-no per-component wiring needed. In the LangSmith UI, one `research()` call
-shows up as a single trace tree: the LangGraph nodes (`plan` → `run_pass` →
-`check_faithfulness` → `finalize`), every source's discovery tool call
-nested under `run_pass`, the retrieval calls, and the final synthesis LLM
-call, each with inputs/outputs/latency.
-
-## Tests and eval scripts
+## Tests and evals
 
 ```bash
-uv run pytest -q
+uv run pytest -q      # offline and fast — models are mocked
 ```
 
-Unit tests are offline and fast — embeddings and the LLM are mocked, no
-real model load needed to run the suite.
-
-All eval scripts share one golden set (`scripts/eval_data.py`, 18 cases —
-question + expected `corpus/` doc + hand-written reference answer) instead
-of duplicating question text per script. `corpus/` has 9 docs (4 original +
-5 added for eval coverage: chunking, reranking, citation faithfulness,
-embedding models, query rewriting — the last two deliberately overlap in
-topic with existing docs, e.g. embeddings vs. vector databases vs.
-rerankers, so retrieval has real disambiguation to do instead of one
-obviously-correct document per question).
-
-A few scripts run against real models (not part of `pytest`, since
-measuring retrieval/rerank/faithfulness quality without real models would
-be meaningless):
+Eval scripts need real models and a built index, so they live outside
+`pytest`. They share one golden set (`scripts/eval_data.py`, 18 cases) over
+`corpus/` (9 docs, deliberately overlapping in topic so retrieval has real
+disambiguation to do):
 
 ```bash
-python -m src.cli index
 python -m scripts.eval_retrieval      # dense vs hybrid recall@k + MRR
 python -m scripts.eval_rerank         # hybrid vs hybrid+rerank hit@1
 python -m scripts.eval_faithfulness   # citation coverage + faithfulness
-python -m scripts.eval_correctness    # LLM-judge correctness (needs LANGSMITH_API_KEY, uploads to LangSmith)
-python -m scripts.eval_ragas          # RAGAS context precision/recall (judge: resident ChatMLX, needs LANGSMITH_API_KEY, no external LLM API)
+python -m scripts.eval_correctness    # LLM-judge (uploads to LangSmith)
+python -m scripts.eval_ragas          # RAGAS precision/recall (judge: resident ChatMLX)
 ```
 
-`eval_correctness.py` and `eval_ragas.py` upload to the same LangSmith
-dataset (`config.LANGSMITH_EVAL_DATASET`) as two separate experiments —
-compare them side by side in the LangSmith UI rather than reading two
-separate console tables.
+The last two upload to the same LangSmith dataset as separate experiments —
+compare them side by side there rather than in two console tables.
 
 ## Known assumptions (`ARCH-Q`)
 
-Assumptions that couldn't be verified without real hardware are marked
-`# ARCH-Q:` directly in the code (`src/config.py`, `src/providers/embed.py`,
-`src/providers/llm.py`) — LLM HF repo/tag, the FlagEmbedding device kwarg,
-`enable_thinking` support in the chat template, and so on. Each has since
-been exercised on the target hardware (real model loads, real external
-calls) as part of normal development — the `# ARCH-Q:` comments are kept
-as a log of what was originally uncertain, not as open questions.
+Assumptions that couldn't be verified without the real hardware are marked
+`# ARCH-Q:` in code (`config.py`, `providers/embed.py`, `providers/llm.py`).
+All have since been exercised on-device; the comments are kept as a log of
+what was originally uncertain, not as open questions.
