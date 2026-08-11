@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-import io
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from src.sources import arxiv as arxiv_module
 from src.sources.arxiv import ArxivSource
 
 _ATOM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -161,7 +162,10 @@ def test_recent_filters_out_items_older_than_days(monkeypatch):
     assert items[0].title == "Paper 0"
 
 
-def test_recent_with_query_ands_keyword_but_still_sorts_by_date(monkeypatch):
+def test_recent_never_sends_keyword_clause(monkeypatch):
+    """recent() больше не принимает query (см. docstring модуля) — весь пул
+    всегда только по категориям, релевантность запросу ранжируется локально
+    в digest.py через reranker, а не через arXiv-side AND."""
     captured = {}
 
     def fake_urlopen(request, timeout=None):
@@ -170,21 +174,220 @@ def test_recent_with_query_ands_keyword_but_still_sorts_by_date(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
-    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10, query="diffusion models")
-    url = captured["url"]
-    assert "sortBy=submittedDate" in url
-    assert "cat%3Acs.AI" in url
-    assert "all%3Adiffusion+AND+all%3Amodels" in url
-
-
-def test_recent_without_query_omits_keyword_clause(monkeypatch):
-    captured = {}
-
-    def fake_urlopen(request, timeout=None):
-        captured["url"] = request.full_url
-        return _FakeResponse(_atom_with_published(datetime.now(timezone.utc).isoformat()))
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-
-    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10, query="   ")
+    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
     assert "all%3A" not in captured["url"]
+
+
+def _page_of(n: int, when: datetime, start_index: int = 0) -> str:
+    """Страница из n записей с одинаковой датой `when`."""
+    entries = "".join(
+        f"""<entry>
+    <id>http://arxiv.org/abs/2508.{start_index + i:05d}v1</id>
+    <title>Paper {start_index + i}</title>
+    <summary>Abstract.</summary>
+    <published>{when.isoformat()}</published>
+  </entry>"""
+        for i in range(n)
+    )
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'
+
+
+def test_recent_without_limit_pages_until_the_date_window_closes(monkeypatch):
+    """limit=None — выгружаем всё окно постранично (§ пользовательский запрос:
+    не ограничивать, выгружать все статьи за период). Выдача отсортирована по
+    дате, поэтому первая статья старше cutoff означает "дальше только старее"
+    и пагинация останавливается — range-синтаксис в запросе не нужен."""
+    monkeypatch.setattr(arxiv_module, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    fresh = datetime.now(timezone.utc)
+    old = fresh - timedelta(days=30)
+    # 2 полные свежие страницы, затем страница, где окно закрывается
+    pages = [
+        _page_of(2, fresh, 0),
+        _page_of(2, fresh, 2),
+        _atom_with_published(fresh.isoformat(), old.isoformat()),
+    ]
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request.full_url)
+        return _FakeResponse(pages[len(calls) - 1])
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=None)
+    assert len(calls) == 3  # остановились сами, а не по лимиту
+    assert [c.split("start=")[1].split("&")[0] for c in calls] == ["0", "2", "4"]
+    assert len(items) == 5  # 2 + 2 + 1 свежая; статья старше cutoff отброшена
+
+
+def test_recent_without_limit_stops_on_a_short_page(monkeypatch):
+    """arXiv отдал меньше запрошенного — дальше страниц нет, второй запрос
+    был бы впустую."""
+    monkeypatch.setattr(arxiv_module, "_PAGE_SIZE", 5)
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request.full_url)
+        return _FakeResponse(_page_of(2, datetime.now(timezone.utc)))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=None)
+    assert len(calls) == 1
+    assert len(items) == 2
+
+
+def test_recent_without_limit_reports_running_total(monkeypatch):
+    """Выгрузка окна — несколько запросов с паузами между ними; без
+    промежуточных апдейтов это выглядит как зависший процесс."""
+    monkeypatch.setattr(arxiv_module, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    fresh = datetime.now(timezone.utc)
+    pages = [_page_of(2, fresh, 0), _page_of(1, fresh, 2)]
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(1)
+        return _FakeResponse(pages[len(calls) - 1])
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    seen = []
+    ArxivSource(categories=["cs.AI"]).recent(days=7, limit=None, on_progress=seen.append)
+    assert seen == [2, 3]  # накопительный счётчик после каждой страницы
+
+
+def test_recent_with_limit_does_not_overshoot_it(monkeypatch):
+    monkeypatch.setattr(arxiv_module, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    fresh = datetime.now(timezone.utc)
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request.full_url)
+        return _FakeResponse(_page_of(2, fresh, len(calls) * 2))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=3)
+    assert len(items) == 3
+    # Последняя страница запрошена ровно на остаток, а не на полный _PAGE_SIZE
+    assert "max_results=1" in calls[-1]
+
+
+def test_recent_stops_once_a_page_is_entirely_known(monkeypatch):
+    """Инкрементальный режим (§ пользовательский запрос: не выкачивать одни и
+    те же статьи по нескольку раз). Новые статьи по дате-desc всегда в начале
+    выдачи, поэтому первая целиком известная страница = догнали кэш."""
+    monkeypatch.setattr(arxiv_module, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    fresh = datetime.now(timezone.utc)
+    # Страница 1 — новые, страница 2 — уже известные, страницы 3 быть не должно
+    pages = [_page_of(2, fresh, 0), _page_of(2, fresh, 2), _page_of(2, fresh, 4)]
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(1)
+        return _FakeResponse(pages[len(calls) - 1])
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    known = {"arxiv:2508.00002v1", "arxiv:2508.00003v1"}
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=None, known_ids=known)
+
+    assert len(calls) == 2  # третья страница не запрашивалась
+    # Возвращается только то, чего не было в кэше — остальное у вызывающего есть
+    assert [i.id for i in items] == ["arxiv:2508.00000v1", "arxiv:2508.00001v1"]
+
+
+def test_recent_without_known_ids_does_not_stop_early(monkeypatch):
+    monkeypatch.setattr(arxiv_module, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    fresh = datetime.now(timezone.utc)
+    old = fresh - timedelta(days=30)
+    pages = [_page_of(2, fresh, 0), _atom_with_published(fresh.isoformat(), old.isoformat())]
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(1)
+        return _FakeResponse(pages[len(calls) - 1])
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=None)
+    assert len(calls) == 2  # шли до границы окна, а не до знакомых статей
+    assert len(items) == 3
+
+
+def test_fetch_retries_on_429_then_succeeds(monkeypatch):
+    """429 при выгрузке всего окна ловится реально, не гипотетически — без
+    ретрая дайджест просто падает."""
+    slept = []
+    monkeypatch.setattr(arxiv_module.time, "sleep", slept.append)
+    attempts = []
+
+    def fake_urlopen(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", None, None)
+        return _FakeResponse(_atom_with_published(datetime.now(timezone.utc).isoformat()))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
+    assert len(attempts) == 3
+    assert len(items) == 1
+    base = arxiv_module._RETRY_BACKOFF_SECONDS
+    assert slept == [base, base * 2]  # экспоненциальный backoff
+
+
+def test_fetch_gives_up_after_retry_attempts(monkeypatch):
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    attempts = []
+
+    def fake_urlopen(request, timeout=None):
+        attempts.append(1)
+        raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(urllib.error.HTTPError):
+        ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
+    assert len(attempts) == arxiv_module._RETRY_ATTEMPTS
+
+
+def test_fetch_retries_on_read_timeout(monkeypatch):
+    """Таймаут чтения на крупной странице — реальный сценарий (подтверждён
+    прогоном на 500 записей), не только 429."""
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    attempts = []
+
+    def fake_urlopen(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise TimeoutError("The read operation timed out")
+        return _FakeResponse(_atom_with_published(datetime.now(timezone.utc).isoformat()))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
+    assert len(attempts) == 2
+    assert len(items) == 1
+
+
+def test_fetch_does_not_retry_on_404(monkeypatch):
+    """4xx кроме 429 — не временная ошибка, ретраить нечего."""
+    monkeypatch.setattr(arxiv_module.time, "sleep", lambda s: None)
+    attempts = []
+
+    def fake_urlopen(request, timeout=None):
+        attempts.append(1)
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(urllib.error.HTTPError):
+        ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
+    assert len(attempts) == 1

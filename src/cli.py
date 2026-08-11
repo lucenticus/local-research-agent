@@ -280,6 +280,26 @@ def cmd_digest(args: argparse.Namespace) -> None:
                     inst = author.institution or "—"
                     h = author.h_index if author.h_index is not None else "—"
                     print(f"      {author.name} — {inst}, h-index: {h}")
+
+            insights = analysis.insights
+            if insights is None:
+                print("    Разбор PDF: — (не удалось скачать или разобрать)")
+            else:
+                print(f"    Разбор PDF (секции: {', '.join(insights.sections_used) or '—'}):")
+                for line in insights.findings_ru.splitlines():
+                    print(f"      {line}" if line.strip() else "")
+                if insights.authors:
+                    print("    Авторы и аффилиации (из PDF):")
+                    for author in insights.authors:
+                        print(f"      {author.name} — {author.affiliation or '—'}")
+                if insights.code_links:
+                    print("    Код и модели:")
+                    for link in insights.code_links:
+                        # stars=0 — реальный ноль, None — не смогли узнать
+                        stars = f"  ★ {link.stars}" if link.stars is not None else ""
+                        print(f"      [{link.kind}] {link.url}{stars}")
+                else:
+                    print("    Код и модели: — (ссылок в PDF не нашлось)")
         print()
 
 
@@ -331,16 +351,23 @@ def main() -> None:
         "--category", action="append", dest="categories", default=[],
         help=f"arXiv-категория, можно несколько раз (по умолчанию {config.ARXIV_AI_CATEGORIES})",
     )
-    p_digest.add_argument("--limit", type=int, default=None, help=f"По умолчанию {config.DIGEST_DEFAULT_LIMIT}")
+    p_digest.add_argument(
+        "--limit", type=int, default=None,
+        help=f"По умолчанию {config.DIGEST_DEFAULT_LIMIT}. Игнорируется при --query — "
+        f"там показывается топ {config.DIGEST_QUERY_TOP_K} самых релевантных",
+    )
     p_digest.add_argument(
         "--query", default=None,
-        help="Ограничить дайджест конкретной темой (свежее по теме, а не вообще всё)",
+        help=f"Топ-{config.DIGEST_QUERY_TOP_K} самых релевантных теме статей за период "
+        f"(ранжируется локально по расширенному пулу, не через arXiv-запрос)",
     )
     p_digest.add_argument("--no-summary", action="store_true", help="Не генерировать LLM-обзор тем")
     p_digest.add_argument(
         "--deep", action="store_true",
-        help=f"Глубокий анализ каждой статьи: русское саммари + цитируемость/venue/h-index "
-             f"авторов через OpenAlex (медленнее, лимит {config.DIGEST_DEEP_MAX_ITEMS} статей)",
+        help=f"Глубокий анализ каждой статьи: русское саммари, разбор PDF (результаты, "
+             f"сравнения, авторы с аффилиациями, ссылки на код со звёздами GitHub) и "
+             f"цитируемость/venue/h-index через OpenAlex (медленнее, лимит "
+             f"{config.DIGEST_DEEP_MAX_ITEMS} статей)",
     )
     p_digest.set_defaults(func=cmd_digest)
 
