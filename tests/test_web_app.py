@@ -38,6 +38,16 @@ def _wait_until_digest_done(client: TestClient, job_id: str, timeout: float = 5.
     raise AssertionError("digest job did not finish in time")
 
 
+def _wait_until_item_analysis_done(client: TestClient, job_id: str, item_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = client.get(f"/api/digest/{job_id}/items/{item_id}/analyze").json()
+        if data["status"] != "running":
+            return data
+        time.sleep(0.02)
+    raise AssertionError("item analysis did not finish in time")
+
+
 def _reset_app_state(monkeypatch):
     monkeypatch.setattr(app_module, "_jobs", {})
     monkeypatch.setattr(app_module, "_sessions", {})
@@ -252,7 +262,7 @@ def test_full_digest_lifecycle_reports_progress_and_result(monkeypatch):
     assert data["result"]["query"] == "diffusion"
     assert data["result"]["items"] == [
         {
-            "title": "Paper", "abstract": "Abstract", "url": "https://arxiv.org/abs/1",
+            "id": "arxiv:1", "title": "Paper", "abstract": "Abstract", "url": "https://arxiv.org/abs/1",
             "published_date": "2026-08-07T00:00:00Z", "authors": ["A. Uthor"], "analysis": None,
         }
     ]
@@ -290,6 +300,7 @@ def test_deep_digest_includes_analysis_in_items(monkeypatch):
             "venue": "NeurIPS",
             "authors": [{"name": "A. Uthor", "institution": "MIT", "h_index": 12}],
         },
+        "insights": None,
     }
 
 
@@ -308,7 +319,9 @@ def test_deep_digest_item_analysis_details_none_when_unindexed(monkeypatch):
     job_id = create_resp.json()["job_id"]
 
     data = _wait_until_digest_done(client, job_id)
-    assert data["result"]["items"][0]["analysis"] == {"summary_ru": "Резюме.", "details": None}
+    assert data["result"]["items"][0]["analysis"] == {
+        "summary_ru": "Резюме.", "details": None, "insights": None,
+    }
 
 
 def test_digest_job_reports_error_status_on_exception(monkeypatch):
@@ -356,3 +369,120 @@ def test_digest_shares_the_same_concurrency_slot_as_research(monkeypatch):
 
     release.set()
     _wait_until_done(client, first.json()["job_id"])
+
+
+def _post_simple_digest(client: TestClient, monkeypatch, item_id: str = "arxiv:1") -> str:
+    def fake_run_digest(days=None, categories=None, limit=None, summarize=None, query=None, deep=False, on_progress=None):
+        item = DiscoveredItem(id=item_id, source="arxiv", title="Paper", abstract="Abstract")
+        return DigestResult(items=[item], days=7, categories=["cs.AI"])
+
+    monkeypatch.setattr(app_module, "run_digest", fake_run_digest)
+    job_id = client.post("/api/digest", json={}).json()["job_id"]
+    _wait_until_digest_done(client, job_id)
+    return job_id
+
+
+def test_item_analysis_returns_404_for_unknown_digest_job(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    resp = client.post("/api/digest/does-not-exist/items/arxiv:1/analyze")
+    assert resp.status_code == 404
+
+
+def test_item_analysis_returns_404_for_unknown_item(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    job_id = _post_simple_digest(client, monkeypatch)
+
+    resp = client.post(f"/api/digest/{job_id}/items/unknown-id/analyze")
+    assert resp.status_code == 404
+
+
+def test_item_analysis_lifecycle_reports_progress_and_result(monkeypatch):
+    """Клик по кнопке "Детальный анализ" на конкретной карточке запускает
+    анализ только этой статьи — с собственным прогрессом, не общим на весь
+    дайджест (§ пользовательский запрос: видно, что процесс не завис)."""
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    job_id = _post_simple_digest(client, monkeypatch)
+
+    def fake_analyze_item(item, on_progress=None):
+        assert item.id == "arxiv:1"
+        if on_progress:
+            on_progress("Пишем саммари на русском…")
+        return ItemAnalysis(
+            summary_ru="Резюме статьи.",
+            details=PaperDetails(
+                citation_count=5, venue="NeurIPS",
+                authors=[AuthorDetails(name="A. Uthor", institution="MIT", h_index=12)],
+            ),
+        )
+
+    monkeypatch.setattr(app_module, "analyze_item", fake_analyze_item)
+
+    resp = client.post(f"/api/digest/{job_id}/items/arxiv:1/analyze")
+    assert resp.status_code == 200
+
+    data = _wait_until_item_analysis_done(client, job_id, "arxiv:1")
+    assert data["status"] == "done"
+    assert "Пишем саммари на русском…" in data["progress"]
+    assert data["result"] == {
+        "summary_ru": "Резюме статьи.",
+        "details": {
+            "citation_count": 5,
+            "venue": "NeurIPS",
+            "authors": [{"name": "A. Uthor", "institution": "MIT", "h_index": 12}],
+        },
+        "insights": None,
+    }
+
+
+def test_item_analysis_reports_error_status_on_exception(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    job_id = _post_simple_digest(client, monkeypatch)
+
+    def fake_analyze_item(item, on_progress=None):
+        raise RuntimeError("openalex is down")
+
+    monkeypatch.setattr(app_module, "analyze_item", fake_analyze_item)
+
+    client.post(f"/api/digest/{job_id}/items/arxiv:1/analyze")
+    data = _wait_until_item_analysis_done(client, job_id, "arxiv:1")
+    assert data["status"] == "error"
+    assert "openalex is down" in data["error"]
+
+
+def test_item_analysis_rejects_second_run_while_first_still_running(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    job_id = _post_simple_digest(client, monkeypatch)
+
+    started = __import__("threading").Event()
+    release = __import__("threading").Event()
+
+    def fake_analyze_item(item, on_progress=None):
+        started.set()
+        release.wait(timeout=5.0)
+        return ItemAnalysis(summary_ru="ok", details=None)
+
+    monkeypatch.setattr(app_module, "analyze_item", fake_analyze_item)
+
+    first = client.post(f"/api/digest/{job_id}/items/arxiv:1/analyze")
+    assert first.status_code == 200
+    started.wait(timeout=5.0)
+
+    second = client.post(f"/api/digest/{job_id}/items/arxiv:1/analyze")
+    assert second.status_code == 409
+
+    release.set()
+    _wait_until_item_analysis_done(client, job_id, "arxiv:1")
+
+
+def test_get_item_analysis_returns_404_before_any_run(monkeypatch):
+    _reset_app_state(monkeypatch)
+    client = TestClient(app_module.app)
+    job_id = _post_simple_digest(client, monkeypatch)
+
+    resp = client.get(f"/api/digest/{job_id}/items/arxiv:1/analyze")
+    assert resp.status_code == 404

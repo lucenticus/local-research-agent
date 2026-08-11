@@ -40,7 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config
-from ..agent.digest import DigestResult, run_digest
+from ..agent.digest import DigestResult, ItemAnalysis, analyze_item, run_digest
 from ..agent.research_runner import ResearchResult, run_followup, run_research
 from ..agent.state import ResearchState
 from ..providers import tracing
@@ -80,6 +80,20 @@ class DigestJob:
     status: Literal["running", "done", "error"] = "running"
     progress: list[str] = field(default_factory=list)
     result: DigestResult | None = None
+    error: str | None = None
+    item_analyses: dict[str, "ItemAnalysisJob"] = field(default_factory=dict)  # ключ — item.id
+
+
+@dataclass
+class ItemAnalysisJob:
+    """Анализ одной статьи дайджеста по клику ("Детальный анализ" в UI),
+    отдельно от `DigestJob.result.analyses` (bulk-режим `deep=True`, CLI) —
+    веб-UI больше не гонит анализ по всем статьям разом, только по запросу
+    пользователя на конкретную карточку."""
+
+    status: Literal["running", "done", "error"] = "running"
+    progress: list[str] = field(default_factory=list)
+    result: ItemAnalysis | None = None
     error: str | None = None
 
 
@@ -148,6 +162,7 @@ def _analysis_to_dict(analysis: Any) -> dict[str, Any] | None:
     if analysis is None:
         return None
     details = analysis.details
+    insights = analysis.insights
     return {
         "summary_ru": analysis.summary_ru,
         "details": None
@@ -157,6 +172,19 @@ def _analysis_to_dict(analysis: Any) -> dict[str, Any] | None:
             "venue": details.venue,
             "authors": [
                 {"name": a.name, "institution": a.institution, "h_index": a.h_index} for a in details.authors
+            ],
+        },
+        "insights": None
+        if insights is None
+        else {
+            "findings_ru": insights.findings_ru,
+            "code_links": [
+                {"url": link.url, "kind": link.kind, "stars": link.stars}
+                for link in insights.code_links
+            ],
+            "sections_used": list(insights.sections_used),
+            "authors": [
+                {"name": a.name, "affiliation": a.affiliation} for a in insights.authors
             ],
         },
     }
@@ -176,6 +204,7 @@ def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
             "summary": job.result.summary,
             "items": [
                 {
+                    "id": item.id,
                     "title": item.title,
                     "abstract": item.abstract,
                     "url": item.url,
@@ -188,6 +217,45 @@ def _digest_job_to_dict(job: DigestJob) -> dict[str, Any]:
         },
         "error": job.error,
     }
+
+
+def _item_analysis_job_to_dict(job: ItemAnalysisJob) -> dict[str, Any]:
+    return {
+        "status": job.status,
+        "progress": list(job.progress),
+        "result": _analysis_to_dict(job.result),
+        "error": job.error,
+    }
+
+
+def _find_digest_item(job: DigestJob, item_id: str) -> Any:
+    if job.result is None:
+        raise HTTPException(409, "Дайджест ещё не готов")
+    for item in job.result.items:
+        if item.id == item_id:
+            return item
+    raise HTTPException(404, "Неизвестная статья в этом дайджесте")
+
+
+def _run_item_analysis_job(digest_job: DigestJob, item_id: str, item: Any) -> None:
+    global _current_job_id
+    analysis_job = digest_job.item_analyses[item_id]
+    try:
+        def on_progress(message: str) -> None:
+            with _jobs_lock:
+                analysis_job.progress.append(message)
+
+        result = analyze_item(item, on_progress=on_progress)
+        with _jobs_lock:
+            analysis_job.result = result
+            analysis_job.status = "done"
+    except Exception as exc:
+        with _jobs_lock:
+            analysis_job.error = str(exc)
+            analysis_job.status = "error"
+    finally:
+        with _jobs_lock:
+            _current_job_id = None
 
 
 def _run_digest_job(job: DigestJob, days: int | None, categories: list[str] | None,
@@ -340,3 +408,37 @@ def get_digest(job_id: str) -> dict[str, Any]:
         if job is None:
             raise HTTPException(404, "Неизвестный job_id")
         return _digest_job_to_dict(job)
+
+
+@app.post("/api/digest/{job_id}/items/{item_id}/analyze")
+def create_item_analysis(job_id: str, item_id: str) -> dict[str, Any]:
+    global _current_job_id
+    with _jobs_lock:
+        digest_job = _digest_jobs.get(job_id)
+        if digest_job is None:
+            raise HTTPException(404, "Неизвестный job_id")
+        item = _find_digest_item(digest_job, item_id)
+        existing = digest_job.item_analyses.get(item_id)
+        if existing is not None and existing.status == "running":
+            raise HTTPException(409, "Анализ этой статьи уже выполняется")
+        _require_free_slot()
+        analysis_job = ItemAnalysisJob()
+        digest_job.item_analyses[item_id] = analysis_job
+        _current_job_id = f"{job_id}:{item_id}"
+
+    threading.Thread(
+        target=_run_item_analysis_job, args=(digest_job, item_id, item), daemon=True
+    ).start()
+    return {"status": "running"}
+
+
+@app.get("/api/digest/{job_id}/items/{item_id}/analyze")
+def get_item_analysis(job_id: str, item_id: str) -> dict[str, Any]:
+    with _jobs_lock:
+        digest_job = _digest_jobs.get(job_id)
+        if digest_job is None:
+            raise HTTPException(404, "Неизвестный job_id")
+        analysis_job = digest_job.item_analyses.get(item_id)
+        if analysis_job is None:
+            raise HTTPException(404, "Анализ этой статьи ещё не запускался")
+        return _item_analysis_job_to_dict(analysis_job)
