@@ -201,6 +201,19 @@ def _triage(sub_question: SubQuestion, candidates: list[Candidate]) -> list[Cand
     return scoreable[: config.FUNNEL_TRIAGE_TOP_N]
 
 
+def discover_candidates(topic: str, sources: list[Source], top_n: int = 5) -> list[Candidate]:
+    """Discovery + triage over a single topic, standalone — no sub-question
+    loop, no deep read, no synthesis. For a caller that just wants a ranked
+    shortlist of candidate papers to pick from by hand (mcp_server.py's
+    `find_papers` tool, used by repro-lab's discovery node over MCP), not a
+    full research answer. Reuses the exact `_discover`/`_triage` stages
+    `loop.run()` already uses — no separate implementation to keep in sync.
+    """
+    sub_question = SubQuestion(text=topic)
+    candidates = _discover(sub_question, sources, config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE)
+    return _triage(sub_question, candidates)[:top_n]
+
+
 # Кэшируется на модуль (не на вызов) — get_mcp_tools() делает отдельный
 # connect/list_tools/disconnect round-trip (см. providers/mcp_client.py),
 # незачем платить его на каждый прочитанный кандидат. Сентинел "unset"

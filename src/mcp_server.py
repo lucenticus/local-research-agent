@@ -13,9 +13,12 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from . import config
+from .agent.funnel import discover_candidates
 from .agent.research_runner import SourceRef, retrieve, run_research, unique_sources
 from .agent.synthesize import synthesize
 from .providers import tracing
+from .sources.arxiv import ArxivSource
+from .sources.semantic_scholar import SemanticScholarSource
 from .store.qdrant_store import QdrantStore
 
 mcp = FastMCP("local-research-agent")
@@ -43,6 +46,38 @@ def ask(question: str) -> str:
     answer = synthesize(question, hits)
     sources = unique_sources(hits)
     return f"{answer}\n\nSources:\n{_format_sources(sources)}" if sources else answer
+
+
+def _paper_sources() -> list:
+    # Paper-only, deliberately narrower than default_sources(): this tool's
+    # whole point is "candidate papers to reproduce", so a general web
+    # source (blog posts, Nature news articles) would outrank the actual
+    # arXiv preprint on relevance and crowd out the one result a caller can
+    # act on — confirmed by a real run on "parameter-efficient fine-tuning
+    # for LLMs" where all 3 top web hits were blog/journal write-ups, not a
+    # single arXiv paper.
+    return [ArxivSource(categories=config.ARXIV_AI_CATEGORIES), SemanticScholarSource()]
+
+
+@mcp.tool()
+def find_papers(topic: str, top_n: int = 5) -> str:
+    """Find candidate arXiv/Semantic Scholar papers for a topic — discovery
+    + relevance/citation/recency triage over arXiv and Semantic Scholar
+    only (no general web search — see `_paper_sources`), no deep read, no
+    synthesis. Returns a ranked shortlist (title, paper URL, citation
+    count, id) so a caller can pick which paper to look at deeply next,
+    without paying for a full `research` call on every candidate."""
+    candidates = discover_candidates(topic, _paper_sources(), top_n)
+    if not candidates:
+        return "No candidates found."
+    lines = []
+    for i, c in enumerate(candidates, start=1):
+        citations = c.meta.get("citation_count")
+        year = c.meta.get("year")
+        suffix = f" (citations: {citations})" if citations is not None else ""
+        suffix += f", {year}" if year else ""
+        lines.append(f"[{i}] {c.title}{suffix}\n    id: {c.id}\n    {c.meta.get('url') or ''}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

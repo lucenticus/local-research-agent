@@ -470,3 +470,26 @@ def test_run_dedups_same_arxiv_paper_found_via_multiple_sources(monkeypatch):
     assert [c.id for c in state.candidates] == ["arxiv:2508.11957"]
     # Первый найденный источник (arxiv.py) побеждает - его заголовок сохраняется.
     assert state.candidates[0].title == "A Comprehensive Review"
+
+
+def test_discover_candidates_returns_triaged_shortlist(monkeypatch):
+    monkeypatch.setattr(funnel.config, "FUNNEL_TRIAGE_TOP_N", 5)
+    _mock_embed(monkeypatch, {"cats": [1.0, 0.0], "dogs": [0.0, 1.0]})
+
+    source = _FakeSource(
+        "s",
+        [
+            _item("a", "About dogs", "about dogs"),
+            _item("b", "About cats", "about cats"),
+        ],
+    )
+
+    shortlist = funnel.discover_candidates("cats?", [source], top_n=1)
+
+    assert [c.id for c in shortlist] == ["b"]
+
+
+def test_discover_candidates_returns_empty_list_when_nothing_found():
+    source = _FakeSource("s", [])
+
+    assert funnel.discover_candidates("anything", [source]) == []
