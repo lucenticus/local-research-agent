@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import config
+from . import metrics
 
 _model: Any = None
 _tokenizer: Any = None
@@ -43,19 +44,38 @@ def build_chat_prompt(system_prompt: str, user_message: str) -> str:
 def generate(
     prompt: str,
     *,
-    max_tokens: int = config.LLM_MAX_TOKENS,
-    temperature: float = config.LLM_TEMPERATURE,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
 ) -> str:
+    """`None` — взять значение из config В МОМЕНТ ВЫЗОВА.
+
+    Не `config.X` в дефолте аргумента: Python вычисляет дефолты один раз при
+    импорте, поэтому `config.LLM_TEMPERATURE = 0` из eval-прогона молча не
+    имел бы никакого эффекта — прогон считался бы детерминированным, оставаясь
+    случайным.
+    """
+    max_tokens = config.LLM_MAX_TOKENS if max_tokens is None else max_tokens
+    temperature = config.LLM_TEMPERATURE if temperature is None else temperature
     _ensure_loaded()
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
 
     sampler = make_sampler(temp=temperature)
-    return mlx_generate(
-        _model,
-        _tokenizer,
-        prompt=prompt,
-        max_tokens=max_tokens,
-        sampler=sampler,
-        verbose=False,
+    with metrics.track("llm.generate"):
+        answer = mlx_generate(
+            _model,
+            _tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            verbose=False,
+        )
+    # Токены считаем тем же токенайзером, что и генерировал — mlx_lm не
+    # возвращает usage. Лишний encode на вызов, на фоне самой генерации
+    # это шум.
+    metrics.add_tokens(
+        "llm.generate",
+        prompt=len(_tokenizer.encode(prompt)),
+        completion=len(_tokenizer.encode(answer)),
     )
+    return answer

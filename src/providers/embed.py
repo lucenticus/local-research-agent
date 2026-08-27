@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import config
+from . import metrics
 
 _model: Any = None
 
@@ -51,9 +52,10 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     """Dense-эмбеддинги для списка текстов. Пустой вход -> пустой выход."""
     if not texts:
         return []
-    model = _load()
-    out = model.encode(texts, return_dense=True, return_sparse=False, return_colbert_vecs=False)
-    return [vec.tolist() for vec in out["dense_vecs"]]
+    with metrics.track("embed.embed_texts", items=len(texts)):
+        model = _load()
+        out = model.encode(texts, return_dense=True, return_sparse=False, return_colbert_vecs=False)
+        return [vec.tolist() for vec in out["dense_vecs"]]
 
 
 def _to_sparse_dict(lexical_weights: dict) -> dict[int, float]:
@@ -68,11 +70,12 @@ def embed_texts_hybrid(texts: list[str]) -> tuple[list[list[float]], list[dict[i
     представления нужны сразу, чтобы не гонять модель дважды на одном тексте."""
     if not texts:
         return [], []
-    model = _load()
-    out = model.encode(texts, return_dense=True, return_sparse=True, return_colbert_vecs=False)
-    dense = [vec.tolist() for vec in out["dense_vecs"]]
-    sparse = [_to_sparse_dict(w) for w in out["lexical_weights"]]
-    return dense, sparse
+    with metrics.track("embed.embed_texts_hybrid", items=len(texts)):
+        model = _load()
+        out = model.encode(texts, return_dense=True, return_sparse=True, return_colbert_vecs=False)
+        dense = [vec.tolist() for vec in out["dense_vecs"]]
+        sparse = [_to_sparse_dict(w) for w in out["lexical_weights"]]
+        return dense, sparse
 
 
 def embed_sparse(texts: list[str]) -> list[dict[int, float]]:
@@ -83,6 +86,7 @@ def embed_sparse(texts: list[str]) -> list[dict[int, float]]:
     вызовы по всему проекту)."""
     if not texts:
         return []
-    model = _load()
-    out = model.encode(texts, return_dense=False, return_sparse=True, return_colbert_vecs=False)
-    return [_to_sparse_dict(w) for w in out["lexical_weights"]]
+    with metrics.track("embed.embed_sparse", items=len(texts)):
+        model = _load()
+        out = model.encode(texts, return_dense=False, return_sparse=True, return_colbert_vecs=False)
+        return [_to_sparse_dict(w) for w in out["lexical_weights"]]

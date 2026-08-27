@@ -19,6 +19,7 @@ import gc
 from typing import Any
 
 from .. import config
+from . import metrics
 
 _INSTRUCT = "Given a search query, retrieve relevant passages that answer the query"
 _PREFIX = (
@@ -32,7 +33,11 @@ _SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 def _load() -> tuple[Any, Any]:
     from mlx_lm import load  # lazy import
 
-    return load(config.RERANK_HF_REPO)
+    # Считается отдельно от скоринга: по инварианту памяти (§1) реранкер
+    # грузится заново на КАЖДЫЙ вызов, и эта цена должна быть видна в
+    # отчёте, а не растворяться во времени скоринга.
+    with metrics.track("rerank.load"):
+        return load(config.RERANK_HF_REPO)
 
 
 def _release(model: Any, tokenizer: Any) -> None:
@@ -76,7 +81,8 @@ def score(query: str, candidates: list[dict[str, Any]]) -> list[tuple[dict[str, 
         return []
     model, tokenizer = _load()
     try:
-        scores = _score_batch(model, tokenizer, query, [c["text"] for c in candidates])
+        with metrics.track("rerank.score", items=len(candidates)):
+            scores = _score_batch(model, tokenizer, query, [c["text"] for c in candidates])
     finally:
         _release(model, tokenizer)
     return list(zip(candidates, scores, strict=True))
@@ -100,6 +106,7 @@ def score_pairs(pairs: list[tuple[str, str]]) -> list[float]:
         return []
     model, tokenizer = _load()
     try:
-        return [_score_one(model, tokenizer, query, text) for query, text in pairs]
+        with metrics.track("rerank.score_pairs", items=len(pairs)):
+            return [_score_one(model, tokenizer, query, text) for query, text in pairs]
     finally:
         _release(model, tokenizer)
