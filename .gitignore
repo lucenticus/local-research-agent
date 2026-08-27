@@ -10,3 +10,6 @@ __pycache__/
 
 # локальный конфиг дев-сервера для Claude Code
 .claude/
+
+# кэш цитируемости (sources/citation_cache.py) — производный, пересоздаётся
+.cache/

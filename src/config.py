@@ -319,3 +319,20 @@ LANGSMITH_TRACING_ENABLED = False
 # to LangSmith, so it only needs LANGSMITH_API_KEY, not the tracing flag).
 LANGSMITH_EVAL_DATASET = "local-research-agent-correctness"
 LANGSMITH_PROJECT = "local-research-agent"
+
+# --- Кэш цитируемости (sources/citation_cache.py, узел 21) ---
+
+# Воронка спрашивает цитируемость у каждого arXiv-кандидата на каждом
+# прогоне, а популярные статьи находятся снова и снова: за 4 вопроса замера
+# это 30 статей в 3 батчах, и почти те же 30 на следующем прогоне. Кэш
+# убирает повторные запросы — и заодно снимает риск упереться в лимит там,
+# где данные уже есть (OpenAlex этот лимит уже сделал платным, см.
+# sources/citations.py).
+CITATION_CACHE_ENABLED = True
+CITATION_CACHE_PATH = REPO_ROOT / ".cache" / "citations.json"
+# Цитируемость растёт, поэтому кэш обязан протухать. Неделя — компромисс:
+# за неделю число меняется на проценты, а буст в триаже логарифмический
+# (CITATION_BOOST_SCALE * log1p), то есть к таким сдвигам нечувствителен.
+# Бессрочный кэш заморозил бы свежие статьи на нуле навсегда — ровно те,
+# ради которых существует отдельный буст по свежести.
+CITATION_CACHE_TTL_DAYS = 7

@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import citation_cache
 from ._common import SourceUnavailable
 from .base import DiscoveredItem
 
@@ -113,6 +114,10 @@ def lookup_citation_counts(arxiv_ids: list[str]) -> dict[str, int]:
     была) — вызывающий сопоставляет со своими кандидатами, не зная про
     внутреннюю нормализацию.
 
+    Ответы кэшируются на диске (`citation_cache`, узел 21) — популярные
+    статьи находятся снова и снова, и платить за них запросом каждый раз
+    незачем.
+
     Статьи, которых S2 не знает, просто отсутствуют в ответе: это «нет
     данных», нормальное дело для свежего препринта. А вот недоступность API —
     `SourceUnavailable`, потому что записать её как «нет данных» значило бы
@@ -121,9 +126,18 @@ def lookup_citation_counts(arxiv_ids: list[str]) -> dict[str, int]:
     if not arxiv_ids:
         return {}
 
-    counts: dict[str, int] = {}
-    for start in range(0, len(arxiv_ids), _BATCH_MAX_IDS):
-        page = arxiv_ids[start : start + _BATCH_MAX_IDS]
+    # Кэш стоит здесь, а НЕ в воронке, сознательно: фикстуры замера
+    # подменяют эту функцию целиком (`evals/fixtures.py`), то есть замер до
+    # кэша не доходит. Вычитай кэш выше по стеку — он забирал бы часть id из
+    # батча, ключ фикстуры (отсортированный список id) переставал бы
+    # совпадать с записанным, и прогон уходил бы в промахи.
+    counts, missing = citation_cache.get_many(arxiv_ids)
+    if not missing:
+        return counts
+
+    fetched: dict[str, int] = {}
+    for start in range(0, len(missing), _BATCH_MAX_IDS):
+        page = missing[start : start + _BATCH_MAX_IDS]
         # Один запрошенный id может встретиться дважды (разные подвопросы
         # нашли ту же статью) — S2 отдаёт ответы позиционно, так что
         # дедупликация тут сломала бы соответствие ответов запросу.
@@ -131,8 +145,9 @@ def lookup_citation_counts(arxiv_ids: list[str]) -> dict[str, int]:
         for arxiv_id, entry in zip(page, body, strict=True):
             count = (entry or {}).get("citationCount")
             if isinstance(count, int):
-                counts[arxiv_id] = count
-    return counts
+                fetched[arxiv_id] = count
+    citation_cache.put_many(fetched)
+    return {**counts, **fetched}
 
 
 def _fetch_batch(ids: list[str]) -> list[dict | None]:

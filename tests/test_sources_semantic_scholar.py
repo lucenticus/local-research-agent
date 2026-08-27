@@ -115,3 +115,25 @@ def test_error_object_instead_of_a_list_is_not_silently_accepted(monkeypatch):
     )
     with pytest.raises(SourceUnavailable):
         s2.lookup_citation_counts(["bad"])
+
+
+def test_second_call_for_the_same_paper_makes_no_request(monkeypatch):
+    """Ради этого кэш и заводился: популярные статьи находятся снова и снова
+    на каждом прогоне, и платить за них запросом каждый раз незачем."""
+    calls: list = []
+    monkeypatch.setattr(
+        "urllib.request.urlopen", _urlopen_returning([{"citationCount": 42}], calls)
+    )
+    assert s2.lookup_citation_counts(["1706.03762"]) == {"1706.03762": 42}
+    assert s2.lookup_citation_counts(["1706.03762"]) == {"1706.03762": 42}
+    assert len(calls) == 1
+
+
+def test_only_the_uncached_ids_are_requested(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen_returning([{"citationCount": 1}], seen))
+    s2.lookup_citation_counts(["a"])
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen_returning([{"citationCount": 2}], seen))
+    assert s2.lookup_citation_counts(["a", "b"]) == {"a": 1, "b": 2}
+    assert seen[-1] == {"ids": ["ARXIV:b"]}, "спрашивать надо только недостающее"
