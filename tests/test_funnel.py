@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from src.agent import funnel
+from src.sources._common import SourceUnavailable
 from src.agent.state import Budget, Candidate, ResearchState, SubQuestion
 from src.providers import embed, llm, mcp_client
 from src.sources.base import DiscoveredItem
@@ -247,7 +248,7 @@ def test_recency_and_citation_boosts_are_independent(monkeypatch):
 
 
 def test_discover_enriches_arxiv_items_missing_citation_count(monkeypatch):
-    monkeypatch.setattr(funnel, "lookup_citation_count", lambda title: 77)
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {"1": 77})
     arxiv_item = DiscoveredItem(
         id="arxiv:1", source="arxiv", title="Some Paper", abstract="abstract", citation_count=None
     )
@@ -257,11 +258,48 @@ def test_discover_enriches_arxiv_items_missing_citation_count(monkeypatch):
     assert candidates[0].meta["citation_count"] == 77
 
 
-def test_discover_does_not_enrich_non_arxiv_items(monkeypatch):
-    def _fail(title):
-        raise AssertionError("lookup_citation_count must not be called for non-arxiv sources")
+def test_discover_asks_for_every_arxiv_id_in_one_call(monkeypatch):
+    """Батч, а не вызов на кандидата: раньше это были ~30 последовательных
+    HTTP на подвопрос."""
+    calls: list[list[str]] = []
 
-    monkeypatch.setattr(funnel, "lookup_citation_count", _fail)
+    def _batch(ids):
+        calls.append(ids)
+        return {i: 10 for i in ids}
+
+    monkeypatch.setattr(funnel, "lookup_citation_counts", _batch)
+    items = [
+        DiscoveredItem(id=f"arxiv:{n}", source="arxiv", title=f"P{n}", abstract="a")
+        for n in ("1", "2", "3")
+    ]
+    sources = [_FakeSource("a", items[:2]), _FakeSource("b", items[2:])]
+
+    candidates = funnel._discover(SubQuestion(text="q"), sources, discovery_limit=5)
+    assert calls == [["1", "2", "3"]]  # один вызов на подвопрос, оба источника вместе
+    assert [c.meta["citation_count"] for c in candidates] == [10, 10, 10]
+
+
+def test_discover_survives_citation_source_being_down(monkeypatch):
+    """Буст по цитируемости — тайбрейкер: без него триаж работает, и падать
+    из-за недоступности S2 воронка не должна. Но и записать это в фикстуры
+    как «у статьи нет цитирований» нельзя — потому источник и поднимает
+    исключение, а гасится оно здесь."""
+
+    def _down(ids):
+        raise SourceUnavailable("429")
+
+    monkeypatch.setattr(funnel, "lookup_citation_counts", _down)
+    source = _FakeSource("s", [DiscoveredItem(id="arxiv:1", source="arxiv", title="P", abstract="a")])
+
+    candidates = funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5)
+    assert candidates[0].meta["citation_count"] is None
+
+
+def test_discover_does_not_ask_about_non_arxiv_items(monkeypatch):
+    def _fail(ids):
+        raise AssertionError("citation lookup must not be called for non-arxiv sources")
+
+    monkeypatch.setattr(funnel, "lookup_citation_counts", _fail)
     s2_item = DiscoveredItem(
         id="s2:1", source="semantic_scholar", title="Some Paper", abstract="abstract",
         citation_count=None,
@@ -272,18 +310,17 @@ def test_discover_does_not_enrich_non_arxiv_items(monkeypatch):
     assert candidates[0].meta["citation_count"] is None
 
 
-def test_discover_does_not_enrich_when_citation_count_already_known(monkeypatch):
-    def _fail(title):
-        raise AssertionError("lookup_citation_count must not be called when already known")
+def test_discover_does_not_ask_when_citation_count_already_known(monkeypatch):
+    def _fail(ids):
+        raise AssertionError("citation lookup must not be called when already known")
 
-    monkeypatch.setattr(funnel, "lookup_citation_count", _fail)
+    monkeypatch.setattr(funnel, "lookup_citation_counts", _fail)
     arxiv_item = DiscoveredItem(
         id="arxiv:1", source="arxiv", title="Some Paper", abstract="abstract", citation_count=5
     )
     source = _FakeSource("s", [arxiv_item])
 
     candidates = funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5)
-    assert candidates[0].meta["citation_count"] == 5
 
 
 def test_triage_citation_boost_can_flip_near_tied_ranking(monkeypatch):

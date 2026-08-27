@@ -9,8 +9,9 @@
 
 1. `discover()` каждого источника — `sources/replay.py`;
 2. **полный текст PDF** (`funnel.fetch_pdf_sections`) — deep read качает статьи;
-3. **цитируемость** (`funnel.lookup_citation_count`, OpenAlex) — влияет на скор
-   триажа, то есть на то, какие кандидаты вообще доживут до чтения;
+3. **цитируемость** (`funnel.lookup_citation_counts`, Semantic Scholar батчем)
+   — влияет на скор триажа, то есть на то, какие кандидаты вообще доживут до
+   чтения;
 4. **текущее время** (`funnel._now`) — буст по свежести считается от «сейчас»,
    так что тот же прогон завтра ранжирует иначе. Это не сеть, но вход;
 5. **лимит по времени** (`Budget.max_seconds`) — медленный прогон
@@ -94,7 +95,7 @@ def frozen_world(cache: DiscoveryCache):
         return
 
     real_pdf = funnel.fetch_pdf_sections
-    real_citations = funnel.lookup_citation_count
+    real_citations = funnel.lookup_citation_counts
     real_now = funnel._now
 
     if cache.mode == MODE_RECORD:
@@ -110,24 +111,30 @@ def frozen_world(cache: DiscoveryCache):
             cache.put_call("pdf", url, [asdict(s) for s in sections])
         return sections
 
-    def citations(title: str) -> int | None:
-        cached = cache.get_call("citations", title)
+    def citations(arxiv_ids: list[str]) -> dict[str, int]:
+        # Ключ — отсортированный список id, а не сам вызов: один и тот же
+        # набор статей может прийти в разном порядке (источники отвечают не
+        # по расписанию), и это тот же самый вопрос к API.
+        key = ",".join(sorted(arxiv_ids))
+        cached = cache.get_call("citations", key)
         if cached is not replay._MISS:
             return cached
-        # None — «не нашли», это валидный записываемый факт, а не промах кэша.
-        count = real_citations(title)
+        # Отсутствие статьи в ответе — валидный записываемый факт («S2 её не
+        # знает»), в отличие от недоступности API: та поднимает
+        # SourceUnavailable и до записи не доходит вовсе.
+        counts = real_citations(arxiv_ids)
         if cache.mode == MODE_RECORD:
-            cache.put_call("citations", title, count)
-        return count
+            cache.put_call("citations", key, counts)
+        return counts
 
     funnel.fetch_pdf_sections = pdf
-    funnel.lookup_citation_count = citations
+    funnel.lookup_citation_counts = citations
     funnel._now = lambda: frozen
     try:
         yield
     finally:
         funnel.fetch_pdf_sections = real_pdf
-        funnel.lookup_citation_count = real_citations
+        funnel.lookup_citation_counts = real_citations
         funnel._now = real_now
 
 

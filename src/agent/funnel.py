@@ -20,8 +20,10 @@ uvx/npx, см. README), а если и это недоступно/выключ�
 
 Триаж учитывает цитируемость (§ пользовательский запрос 2026-08-06):
 Semantic Scholar отдаёт `citationCount` прямо при discovery, у arXiv своей
-цитируемости нет — обогащаем через `sources/citations.py` (OpenAlex, best
-effort). Итоговый score триажа = косинус (семантическая релевантность
+цитируемости нет — обогащаем батчем через `semantic_scholar.
+lookup_citation_counts` (один запрос на подвопрос, сопоставление по точному
+arXiv-id; раньше был OpenAlex по одному запросу на кандидата с поиском по
+заголовку — см. его docstring). Итоговый score триажа = косинус (семантическая релевантность
 подвопросу) + небольшой логарифмический буст по цитируемости — см.
 `_combined_score` и `CITATION_BOOST_SCALE` в config.py: буст — тайбрейкер
 между близкими по смыслу кандидатами, а не замена семантике (иначе
@@ -60,9 +62,9 @@ from ..providers import embed, llm
 from ..providers.mcp_client import content_to_text, get_single_tool
 from ..sources._common import SourceUnavailable
 from ..sources.base import DiscoveredItem, Source
-from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
 from ..sources.pdf import fetch_pdf_sections
+from ..sources.semantic_scholar import lookup_citation_counts
 from ..store.qdrant_store import Chunk, QdrantStore, chunk_id_for
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
@@ -112,18 +114,45 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _to_candidate(item: DiscoveredItem) -> Candidate:
+_ARXIV_ID_PREFIX = "arxiv:"
+
+
+def _citation_counts(items: list[DiscoveredItem]) -> dict[str, int]:
+    """Цитируемость всех arXiv-находок одним батч-запросом, `{item.id: count}`.
+
+    Раньше это был вызов на каждого кандидата внутри `_to_candidate` — по
+    ~30 последовательных HTTP на подвопрос. Батч не просто быстрее: он
+    сопоставляет по точному arXiv-id вместо поиска по заголовку, см.
+    docstring `sources/semantic_scholar.py`.
+
+    Недоступность S2 деградирует до «цитируемость неизвестна» здесь, а не
+    внутри источника: буст по цитируемости — тайбрейкер, триаж без него
+    работает. Но записать эту недоступность как факт «у статьи нет данных»
+    нельзя (фикстуры примут её за правду навсегда), поэтому источник и
+    поднимает исключение, а гасится оно ровно тут.
+    """
+    ids = [
+        item.id for item in items
+        if item.source == "arxiv" and item.citation_count is None
+        and item.id.startswith(_ARXIV_ID_PREFIX)
+    ]
+    if not ids:
+        return {}
+    try:
+        by_arxiv_id = lookup_citation_counts([i[len(_ARXIV_ID_PREFIX):] for i in ids])
+    except SourceUnavailable:
+        return {}
+    return {
+        item_id: by_arxiv_id[item_id[len(_ARXIV_ID_PREFIX):]]
+        for item_id in ids
+        if item_id[len(_ARXIV_ID_PREFIX):] in by_arxiv_id
+    }
+
+
+def _to_candidate(item: DiscoveredItem, citation_counts: dict[str, int] | None = None) -> Candidate:
     citation_count = item.citation_count
-    if citation_count is None and item.source == "arxiv":
-        # arXiv не отдаёт цитируемость сам — обогащаем через OpenAlex.
-        # Недоступность OpenAlex (лимит/сеть) деградирует до None здесь, а не
-        # внутри источника: буст по цитируемости — тайбрейкер, без него триаж
-        # работает, а вот записать это None в фикстуры как факт нельзя, и
-        # поэтому различие обязано существовать выше по стеку.
-        try:
-            citation_count = lookup_citation_count(item.title)
-        except SourceUnavailable:
-            citation_count = None
+    if citation_count is None:
+        citation_count = (citation_counts or {}).get(item.id)
     return Candidate(
         id=_canonical_candidate_id(item),
         source=item.source,
@@ -143,20 +172,23 @@ def _discover(
     sub_question: SubQuestion, sources: list[Source], discovery_limit: int
 ) -> list[Candidate]:
     query = _discovery_query(sub_question.text)
-    candidates: list[Candidate] = []
+    items: list[DiscoveredItem] = []
     for source in sources:
         try:
             # Источник вызывается через LangChain tool-интерфейс
             # (`sources/langchain_tools.py`), а не напрямую `.discover()` —
             # сама логика discovery не меняется, только точка вызова.
             tool = make_discover_tool(source)
-            items: list[DiscoveredItem] = tool.invoke({"query": query, "limit": discovery_limit})
+            found: list[DiscoveredItem] = tool.invoke({"query": query, "limit": discovery_limit})
         except Exception:
             # Внешний источник недоступен/троттлит — воронка продолжает с тем,
             # что нашли остальные источники, а не падает целиком.
             continue
-        candidates.extend(_to_candidate(item) for item in items)
-    return candidates
+        items.extend(found)
+    # Обогащение — после всех источников, одним запросом на подвопрос, а не
+    # по запросу на кандидата.
+    citation_counts = _citation_counts(items)
+    return [_to_candidate(item, citation_counts) for item in items]
 
 
 def _now() -> datetime:

@@ -6,10 +6,7 @@ import io
 import json
 import urllib.error
 
-import pytest
-
 from src.sources import citations
-from src.sources._common import SourceUnavailable
 
 
 class _FakeResponse:
@@ -26,40 +23,14 @@ class _FakeResponse:
         return self._body
 
 
-def test_lookup_returns_citation_count(monkeypatch):
-    payload = {"results": [{"cited_by_count": 49, "title": "An Analysis of Fusion Functions"}]}
-    monkeypatch.setattr(
-        "urllib.request.urlopen", lambda request, timeout=None: _FakeResponse(payload)
-    )
-    assert citations.lookup_citation_count("An Analysis of Fusion Functions") == 49
-
-
-def test_lookup_returns_none_when_no_results(monkeypatch):
-    monkeypatch.setattr(
-        "urllib.request.urlopen", lambda request, timeout=None: _FakeResponse({"results": []})
-    )
-    assert citations.lookup_citation_count("nonexistent paper title") is None
-
-
 def test_lookup_returns_none_on_empty_title():
-    assert citations.lookup_citation_count("   ") is None
+    assert citations.lookup_paper_details("   ") is None
 
 
-def test_lookup_raises_when_openalex_unreachable(monkeypatch):
-    """Недоступность — не «цитируемости нет». Раньше оба случая возвращали
-    None, и записанный в фикстуры None читался как факт «статья без
-    цитирований», хотя это был 429."""
-    def _raise(request, timeout=None):
-        raise urllib.error.URLError("connection refused")
-
-    monkeypatch.setattr("urllib.request.urlopen", _raise)
-    with pytest.raises(SourceUnavailable):
-        citations.lookup_citation_count("some title")
-
-
-def test_paper_details_still_degrades_to_none(monkeypatch):
-    """Витрина дайджеста показывает пустоту в обоих случаях — там различие
-    не нужно и наружу не выносится."""
+def test_lookup_degrades_to_none_when_openalex_unreachable(monkeypatch):
+    """Карточка статьи — витрина: показать нечего и когда статьи нет, и когда
+    OpenAlex не ответил. Различие нужно там, где результат идёт в скоринг или
+    в фикстуры, — а туда цитируемость приходит из S2, не отсюда."""
     def _raise(request, timeout=None):
         raise urllib.error.URLError("connection refused")
 
@@ -67,18 +38,23 @@ def test_paper_details_still_degrades_to_none(monkeypatch):
     assert citations.lookup_paper_details("some title") is None
 
 
-def test_lookup_returns_none_when_count_field_missing(monkeypatch):
+def test_lookup_returns_none_count_when_field_missing(monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen",
         lambda request, timeout=None: _FakeResponse({"results": [{"title": "x"}]}),
     )
-    assert citations.lookup_citation_count("some title") is None
+    assert citations.lookup_paper_details("x").citation_count is None
 
 
 def test_lookup_rejects_mismatched_title_result(monkeypatch):
     """Регрессия на реальный баг (2026-08-06): на запрос про "risk of KV cache
     compression" OpenAlex топ-1 результатом отдал никак не связанную статью
     "XGBoost" (50k+ цитирований) — заголовок совсем другой, число неверное.
+
+    Именно из-за этого класса ошибок цитируемость в воронке переехала на
+    точный arXiv-id (см. sources/semantic_scholar.py); здесь поиск по
+    заголовку остался только ради карточки дайджеста, и порог похожести
+    по-прежнему обязателен.
     """
     monkeypatch.setattr(
         "urllib.request.urlopen",
@@ -86,7 +62,7 @@ def test_lookup_rejects_mismatched_title_result(monkeypatch):
             {"results": [{"cited_by_count": 50424, "title": "XGBoost"}]}
         ),
     )
-    assert citations.lookup_citation_count("The risk of KV cache compression") is None
+    assert citations.lookup_paper_details("The risk of KV cache compression") is None
 
 
 def test_lookup_accepts_closely_matching_title(monkeypatch):
@@ -96,10 +72,10 @@ def test_lookup_accepts_closely_matching_title(monkeypatch):
             {"results": [{"cited_by_count": 1, "title": "LoRC: Low-Rank Compression for LLMs KV Cache"}]}
         ),
     )
-    result = citations.lookup_citation_count(
+    result = citations.lookup_paper_details(
         "LoRC: Low-Rank Compression for LLMs KV Cache with a Progressive Compression Strategy"
     )
-    assert result == 1
+    assert result.citation_count == 1
 
 
 def _dispatch_by_url(responses: dict[str, dict]):

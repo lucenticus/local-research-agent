@@ -169,9 +169,9 @@ def test_frozen_world_is_a_noop_when_disabled(tmp_path):
     from src.sources.replay import MODE_OFF
     from evals.fixtures import frozen_world
 
-    before = (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now)
+    before = (funnel.fetch_pdf_sections, funnel.lookup_citation_counts, funnel._now)
     with frozen_world(_cache(tmp_path, MODE_OFF)):
-        assert (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now) == before
+        assert (funnel.fetch_pdf_sections, funnel.lookup_citation_counts, funnel._now) == before
 
 
 def test_frozen_world_restores_the_originals_even_on_error(tmp_path):
@@ -179,13 +179,13 @@ def test_frozen_world_restores_the_originals_even_on_error(tmp_path):
     from src.sources.replay import MODE_RECORD
     from evals.fixtures import frozen_world
 
-    before = (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now)
+    before = (funnel.fetch_pdf_sections, funnel.lookup_citation_counts, funnel._now)
     try:
         with frozen_world(_cache(tmp_path, MODE_RECORD)):
             raise RuntimeError("boom")
     except RuntimeError:
         pass
-    assert (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now) == before
+    assert (funnel.fetch_pdf_sections, funnel.lookup_citation_counts, funnel._now) == before
 
 
 def test_pdf_and_citations_are_recorded_then_replayed(tmp_path, monkeypatch):
@@ -197,44 +197,68 @@ def test_pdf_and_citations_are_recorded_then_replayed(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(funnel, "fetch_pdf_sections",
                         lambda url: (calls.append(url), [Section(name="R", category="results", text="t")])[1])
-    monkeypatch.setattr(funnel, "lookup_citation_count", lambda title: (calls.append(title), 42)[1])
+    monkeypatch.setattr(funnel, "lookup_citation_counts",
+                        lambda ids: (calls.append(ids), {"1706.03762": 42})[1])
 
     rec = _cache(tmp_path, MODE_RECORD)
     with frozen_world(rec):
         funnel.fetch_pdf_sections("http://x/p.pdf")
-        funnel.lookup_citation_count("Some Paper")
+        funnel.lookup_citation_counts(["1706.03762"])
     rec.save()
     assert len(calls) == 2
 
     rep = _cache(tmp_path, MODE_REPLAY)
     with frozen_world(rep):
         sections = funnel.fetch_pdf_sections("http://x/p.pdf")
-        count = funnel.lookup_citation_count("Some Paper")
+        counts = funnel.lookup_citation_counts(["1706.03762"])
     assert len(calls) == 2, "при replay настоящие функции звать нельзя"
     assert [s.text for s in sections] == ["t"]
-    assert count == 42
+    assert counts == {"1706.03762": 42}
 
 
-def test_unknown_citation_is_replayed_as_none_not_as_a_lookup(tmp_path, monkeypatch):
-    """`None` от OpenAlex — записываемый факт «не нашли», а не промах кэша:
-    иначе при replay мы бы снова полезли в сеть именно там, где её нет."""
+def test_unknown_citation_is_replayed_as_absent_not_as_a_lookup(tmp_path, monkeypatch):
+    """Статья, которой S2 не знает, отсутствует в ответе — это записываемый
+    факт «не нашли», а не промах кэша: иначе при replay мы бы снова полезли
+    в сеть именно там, где её нет."""
     from src.agent import funnel
     from src.sources.replay import MODE_RECORD, MODE_REPLAY
     from evals.fixtures import frozen_world
 
-    monkeypatch.setattr(funnel, "lookup_citation_count", lambda title: None)
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {})
     rec = _cache(tmp_path, MODE_RECORD)
     with frozen_world(rec):
-        funnel.lookup_citation_count("Fresh Preprint")
+        funnel.lookup_citation_counts(["2605.00001"])
     rec.save()
 
-    def _fail(title):
+    def _fail(ids):
         raise AssertionError("при replay сеть трогать нельзя")
 
-    monkeypatch.setattr(funnel, "lookup_citation_count", _fail)
+    monkeypatch.setattr(funnel, "lookup_citation_counts", _fail)
     rep = _cache(tmp_path, MODE_REPLAY)
     with frozen_world(rep):
-        assert funnel.lookup_citation_count("Fresh Preprint") is None
+        assert funnel.lookup_citation_counts(["2605.00001"]) == {}
+
+
+def test_citation_fixture_key_ignores_the_order_of_ids(tmp_path, monkeypatch):
+    """Тот же набор статей в другом порядке — тот же вопрос к API. Источники
+    отвечают не по расписанию, и порядок кандидатов между прогонами плавает."""
+    from src.agent import funnel
+    from src.sources.replay import MODE_RECORD, MODE_REPLAY
+    from evals.fixtures import frozen_world
+
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {"a": 1, "b": 2})
+    rec = _cache(tmp_path, MODE_RECORD)
+    with frozen_world(rec):
+        funnel.lookup_citation_counts(["a", "b"])
+    rec.save()
+
+    def _fail(ids):
+        raise AssertionError("при replay сеть трогать нельзя")
+
+    monkeypatch.setattr(funnel, "lookup_citation_counts", _fail)
+    rep = _cache(tmp_path, MODE_REPLAY)
+    with frozen_world(rep):
+        assert funnel.lookup_citation_counts(["b", "a"]) == {"a": 1, "b": 2}
 
 
 def test_time_is_frozen_to_the_recorded_moment(tmp_path):
