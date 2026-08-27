@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .. import config
@@ -64,6 +64,12 @@ class ResearchResult:
     # (run_followup) мог продолжить именно этот ResearchState, а не начинать
     # с нуля.
     state: ResearchState | None = None
+    # Ровно те чанки, что ушли в synthesize() — нумерация цитат [n] в ответе
+    # соответствует context[n-1]. Тоже не идёт в веб-ответ: нужен оценке
+    # (agent/evaluate.py и evals/), которой без исходного контекста
+    # faithfulness посчитать не по чему. `sources` для этого не годится —
+    # там дедуплицированные заголовки, а не текст.
+    context: list[dict[str, Any]] = field(default_factory=list)
 
 
 def default_sources() -> list[Source]:
@@ -121,6 +127,52 @@ def retrieve(store: QdrantStore, question: str) -> list[dict[str, Any]]:
     return hits
 
 
+def retrieve_per_subquestion(
+    store: QdrantStore, question: str, sub_questions: list[str]
+) -> list[dict[str, Any]]:
+    """Контекст синтеза, собранный по каждому подвопросу отдельно.
+
+    Зачем. `retrieve()` отбирает TOP_K_RETRIEVE чанков по сходству с вопросом
+    ЦЕЛИКОМ. Для вопроса из трёх аспектов пять чанков почти наверняка
+    сгруппируются вокруг одного-двух — того, что ближе к полной строке
+    запроса. Сколько бы граней воронка ни насобирала, до синтеза доезжает
+    один срез: потолок покрытия подтем стоит здесь, а не в планировщике.
+
+    Поэтому retrieval идёт на каждый подвопрос, а результаты сливаются
+    ПООЧЕРЁДНО (round-robin), а не встык: если общий cap обрежет хвост, у
+    каждой грани всё равно останется представительство. Дедуп по тексту
+    чанка — один и тот же фрагмент часто релевантен нескольким граням.
+
+    Один подвопрос — поведение ровно как раньше, лишних вызовов нет.
+    """
+    unique = [sq for sq in dict.fromkeys(sq.strip() for sq in sub_questions) if sq]
+    if len(unique) <= 1:
+        return retrieve(store, question)
+
+    per_query = [retrieve(store, sq) for sq in unique]
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rank in range(max(len(h) for h in per_query)):
+        for hits in per_query:
+            if rank >= len(hits):
+                continue
+            key = hits[rank].get("text", "")
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(hits[rank])
+            if len(merged) >= config.SYNTHESIS_MAX_CHUNKS:
+                return merged
+    return merged
+
+
+def _retrieve_context(store: QdrantStore, question: str, state: ResearchState) -> list[dict[str, Any]]:
+    """Контекст для синтеза: по подвопросам, если их больше одного."""
+    if not config.RETRIEVE_PER_SUBQUESTION:
+        return retrieve(store, question)
+    return retrieve_per_subquestion(store, question, [sq.text for sq in state.sub_questions])
+
+
 def unique_sources(hits: list[dict[str, Any]]) -> list[SourceRef]:
     """Дедуп по заголовку + ссылка/цитируемость для рендера (CLI-текст,
     кликабельная ссылка в веб-интерфейсе). `citation_count == -1` — сентинел
@@ -174,13 +226,14 @@ def run_research(
     on_progress: ProgressCallback | None = None,
 ) -> ResearchResult:
     state = loop.run(question, default_sources(), store, on_progress=on_progress)
-    hits = retrieve(store, question)
+    hits = _retrieve_context(store, question, state)
     answer = synthesize(question, hits, gaps=state.gaps)
     state.add_turn(question, answer)
 
     return ResearchResult(
         answer=answer,
         sources=unique_sources(hits),
+        context=hits,
         candidates=_candidate_summaries(state),
         gaps=state.gaps,
         iterations=state.iterations,
@@ -211,13 +264,14 @@ def run_followup(
             funnel.deep_read_candidate(candidate, question, state, store, on_progress=on_progress)
 
     loop.run(question, default_sources(), store, on_progress=on_progress, state=state)
-    hits = retrieve(store, question)
+    hits = _retrieve_context(store, question, state)
     answer = synthesize(question, hits, gaps=state.gaps, history=state.history)
     state.add_turn(question, answer)
 
     return ResearchResult(
         answer=answer,
         sources=unique_sources(hits),
+        context=hits,
         candidates=_candidate_summaries(state),
         gaps=state.gaps,
         iterations=state.iterations,
