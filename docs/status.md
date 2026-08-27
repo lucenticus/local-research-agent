@@ -62,8 +62,8 @@ Greenfield-план M0–M4 больше не актуален — систем�
 | 18 | Embedding | ✅ | bge-m3 на MPS, корпус генераторами | — |
 | 19 | Indexing / Freshness | ✅ | Qdrant (JIT для funnel; pre-built для `ask`) | свежесть как сигнал ранжирования — проверить, учитывается ли |
 | 20 | State | ✅ | единый `ResearchState`, инварианты (id не дважды, стоп по бюджету) | — |
-| 21 | Cache | 🟡 | Qdrant persistent; digest кэширует окно в свою коллекцию | подтвердить кэш ответов API discovery (не долбить одинаковыми запросами) |
-| 22 | Observability + Eval | ✅ | `evals/` — золотой набор (18 вопросов), `run_discovery.py` (выдача по источникам, отличает «пусто» от «ошибка»), `run_quality.py` (coverage/faithfulness через `evaluate.py`, покрытие подтем, cost/latency), фикстуры `sources/replay.py`, счётчики `providers/metrics.py` | полный baseline на всех 18 вопросах |
+| 21 | Cache | 🟡 | Qdrant persistent; digest кэширует окно в свою коллекцию; `sources/replay.py` — запись/воспроизведение discovery, PDF и цитируемости (для eval) | **постоянный кэш цитируемости** — обычные прогоны заново спрашивают те же популярные статьи; кэш ответов discovery-API вне eval |
+| 22 | Observability + Eval | ✅ | `evals/` — золотой набор (18 вопросов), `run_discovery.py` (выдача по источникам, отличает «пусто» от «ошибка»), `run_quality.py` (coverage/faithfulness через `evaluate.py`, покрытие подтем, cost/latency), фикстуры `sources/replay.py` + `--top-up` до нуля промахов, счётчики `providers/metrics.py`. **Baseline на 4 вопросах снят на герметичной фикстуре** (0 обращений к сети): покрытие подтем 0.541/0.458, faithfulness 0.917/1.000, медиана 104с на вопрос | распространить на все 18 вопросов; порог различимости сейчас ~0.1 по агрегату |
 
 **Свод:** ядро закрыто целиком (retrieval-воронка 10–14, funnel 15–18, state 20, loop 4, gap-check 6, synthesis 7). Тонкие места — по краям цикла: **router (2), recovery-широта (8), eval-харнесс (22)**, плюс несколько «проверить по коду».
 
