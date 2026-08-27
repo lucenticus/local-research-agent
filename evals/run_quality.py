@@ -194,6 +194,8 @@ def main() -> None:
     p.add_argument("--baseline", metavar="FILE", default=None, help="прошлый прогон для диффа")
     p.add_argument("--record", metavar="FILE", default=None, help="записать фикстуры внешних входов")
     p.add_argument("--replay", metavar="FILE", default=None, help="прогон по записанным фикстурам")
+    p.add_argument("--temperature", type=float, default=0.0,
+                   help="температура LLM на время замера (по умолчанию 0 — жадное декодирование)")
     p.add_argument("--top-up", action="store_true",
                    help="в replay доснять то, чего в фикстурах нет (гонять до нуля промахов)")
     args = p.parse_args()
@@ -202,12 +204,25 @@ def main() -> None:
     if args.top_up and not args.replay:
         p.error("--top-up имеет смысл только с --replay")
 
+    # Замер по умолчанию идёт с нулевой температурой, и это НАДО объявлять
+    # вслух. Продакшн семплирует (config.LLM_TEMPERATURE = 0.2), поэтому
+    # абсолютные числа отсюда описывают жадное декодирование, а не то, что
+    # видит пользователь. Но сравнивать конфигурации при включённом
+    # семплировании нельзя: разница между A и B тонет в разнице между двумя
+    # прогонами A. Поймано на том, что декомпозиция выдавала один и тот же
+    # аспект разными словами от прогона к прогону («primary techniques for
+    # compressing the key-value cache» против «primary techniques used to
+    # compress KV-caches»), а фикстуры ключуются подвопросом — и не сходились
+    # никогда.
+    config.LLM_TEMPERATURE = args.temperature
+
     mode = MODE_RECORD if args.record else MODE_REPLAY if args.replay else MODE_OFF
     cache = DiscoveryCache(args.record or args.replay or "/dev/null", mode=mode, top_up=args.top_up)
     before = len(cache)
 
     cases = load_questions(args.tag)[: args.limit]
-    print(f"Вопросов: {len(cases)}  ·  режим фикстур: {mode}  ·  полный research() на каждом")
+    print(f"Вопросов: {len(cases)}  ·  режим фикстур: {mode}  ·  "
+          f"температура: {args.temperature}  ·  полный research() на каждом")
 
     _RUNS_DIR.mkdir(parents=True, exist_ok=True)
     out = _RUNS_DIR / f"quality-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
