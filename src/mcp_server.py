@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import config
 from .agent.funnel import discover_candidates
+from .agent import router
 from .agent.research_runner import SourceRef, retrieve, run_research, unique_sources
 from .agent.synthesize import synthesize
 from .providers import tracing
@@ -94,6 +95,29 @@ def research(question: str) -> str:
         parts.append("Uncovered subquestions (research budget exhausted):")
         parts.extend(f"- {gap}" for gap in result.gaps)
     return "\n".join(parts)
+
+
+@mcp.tool()
+def answer(question: str) -> str:
+    """Answer a question, choosing the cheapest route that can actually
+    answer it: the local corpus if it already covers the question, a full
+    multi-source research run otherwise, or a request to clarify if the
+    question has nothing searchable in it.
+
+    Prefer this over calling `ask` or `research` directly when you don't
+    already know which one the question needs — a research run costs
+    minutes, and `ask` silently returns a poor answer when the corpus
+    doesn't cover the topic."""
+    # Роутер живёт здесь, а не в CLI: в CLI режим выбирает человек командой,
+    # а вызывающая модель по ту сторону MCP такого выбора не делает и
+    # угадывает вслепую. См. agent/router.py.
+    decision = router.route(question, QdrantStore())
+    if decision.route == router.ROUTE_CLARIFY:
+        return (f"Need a clearer question before searching: {decision.reason}. "
+                f"Add the specific topic, system or term you're asking about.")
+    if decision.route == router.ROUTE_ASK:
+        return f"[routed to `ask`: {decision.reason}]\n\n{ask(question)}"
+    return f"[routed to `research`: {decision.reason}]\n\n{research(question)}"
 
 
 def serve() -> None:
