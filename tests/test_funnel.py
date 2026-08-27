@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+from src import config
 from src.agent import funnel
 from src.sources._common import SourceUnavailable
-from src.agent.state import Budget, Candidate, ResearchState, SubQuestion
+from src.agent.state import Budget, Candidate, ResearchState, SourceHealth, SubQuestion
 from src.providers import embed, llm, mcp_client
 from src.sources.base import DiscoveredItem
 
@@ -530,3 +531,94 @@ def test_discover_candidates_returns_empty_list_when_nothing_found():
     source = _FakeSource("s", [])
 
     assert funnel.discover_candidates("anything", [source]) == []
+
+
+class _FlakySource:
+    """Источник, который всегда падает — как S2 без ключа под троттлингом."""
+
+    name = "flaky"
+
+    def __init__(self):
+        self.calls = 0
+
+    def discover(self, query, limit):
+        self.calls += 1
+        raise RuntimeError("429 Too Many Requests")
+
+
+def test_a_source_that_keeps_failing_stops_being_called(monkeypatch):
+    """Замерено вживую: неудачная попытка S2 стоит ~6 секунд одного лишь сна
+    между ретраями, и воронка звала его заново на каждом подвопросе каждого
+    прохода. Ответ известен заранее — платить за него незачем."""
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {})
+    source = _FlakySource()
+    health = SourceHealth()
+
+    for _ in range(5):
+        funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5, health=health)
+
+    assert source.calls == config.SOURCE_FAILURE_LIMIT
+    assert health.is_disabled("flaky")
+
+
+def test_one_failure_does_not_disable_a_healthy_source(monkeypatch):
+    """Разовый таймаут случается и у здорового источника. Вычеркнуть его за
+    одну осечку — потерять данные там, где надо было просто повторить."""
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {})
+    calls = []
+
+    class _FlakyOnce:
+        name = "sometimes"
+
+        def discover(self, query, limit):
+            calls.append(query)
+            if len(calls) == 1:
+                raise RuntimeError("timeout")
+            return [DiscoveredItem(id="x:1", source="sometimes", title="P", abstract="a")]
+
+    source, health = _FlakyOnce(), SourceHealth()
+    funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5, health=health)
+    got = funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5, health=health)
+
+    assert not health.is_disabled("sometimes")
+    assert len(got) == 1
+
+
+def test_an_empty_answer_is_not_a_failure(monkeypatch):
+    """«Ничего не нашёл» и «не смог ответить» — разные факты. Размыкать за
+    пустую выдачу значит вычеркнуть здоровый источник из-за узкого
+    подвопроса."""
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {})
+    source, health = _FakeSource("empty", []), SourceHealth()
+
+    for _ in range(5):
+        funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5, health=health)
+
+    assert not health.is_disabled("empty")
+
+
+def test_a_disabled_source_does_not_block_the_others(monkeypatch):
+    """Один упавший API не должен ронять запрос целиком — ради этого всё и
+    делается."""
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {})
+    flaky = _FlakySource()
+    good = _FakeSource("good", [DiscoveredItem(id="g:1", source="good", title="P", abstract="a")])
+    health = SourceHealth()
+
+    for _ in range(3):
+        got = funnel._discover(SubQuestion(text="q"), [flaky, good], discovery_limit=5, health=health)
+
+    assert health.is_disabled("flaky")
+    assert [c.title for c in got] == ["P"]
+
+
+def test_without_health_nothing_is_short_circuited(monkeypatch):
+    """`discover_candidates` зовёт источник ровно один раз — размыкать там
+    нечего, и лишнее состояние ему навязывать не надо."""
+    monkeypatch.setattr(funnel, "lookup_citation_counts", lambda ids: {})
+    source = _FlakySource()
+
+    for _ in range(3):
+        funnel._discover(SubQuestion(text="q"), [source], discovery_limit=5)
+
+    assert source.calls == 3

@@ -67,7 +67,7 @@ from ..sources.pdf import fetch_pdf_sections
 from ..sources.semantic_scholar import lookup_citation_counts
 from ..store.qdrant_store import Chunk, QdrantStore, chunk_id_for
 from .progress import ProgressCallback, emit as _emit
-from .state import Candidate, Finding, ResearchState, SubQuestion
+from .state import Candidate, Finding, ResearchState, SourceHealth, SubQuestion
 
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(?:v\d+)?")
 
@@ -169,11 +169,22 @@ def _to_candidate(item: DiscoveredItem, citation_counts: dict[str, int] | None =
 
 
 def _discover(
-    sub_question: SubQuestion, sources: list[Source], discovery_limit: int
+    sub_question: SubQuestion,
+    sources: list[Source],
+    discovery_limit: int,
+    health: SourceHealth | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> list[Candidate]:
+    """`health` — счётчик неудач на прогон (узел 8). `None` — разовый вызов
+    вне цикла исследования (`discover_candidates`), где размыкать нечего:
+    источник зовётся ровно один раз."""
     query = _discovery_query(sub_question.text)
     items: list[DiscoveredItem] = []
     for source in sources:
+        if health and health.is_disabled(source.name):
+            # Источник уже показал, что сейчас не работает. Продолжать его
+            # звать — платить бэкоффом за ответ, который известен заранее.
+            continue
         try:
             # Источник вызывается через LangChain tool-интерфейс
             # (`sources/langchain_tools.py`), а не напрямую `.discover()` —
@@ -183,7 +194,16 @@ def _discover(
         except Exception:
             # Внешний источник недоступен/троттлит — воронка продолжает с тем,
             # что нашли остальные источники, а не падает целиком.
+            if health and health.record_failure(source.name):
+                _emit(on_progress,
+                      f"Источник {source.name} отключён до конца прогона: "
+                      f"{config.SOURCE_FAILURE_LIMIT} ошибки подряд")
             continue
+        if health:
+            # Пустая выдача — не сбой: источник ответил, просто ничего не
+            # нашёл. Размыкать за это нельзя, иначе узкий подвопрос вычеркнет
+            # здоровый источник до конца прогона.
+            health.record_success(source.name)
         items.extend(found)
     # Обогащение — после всех источников, одним запросом на подвопрос, а не
     # по запросу на кандидата.
@@ -388,7 +408,10 @@ def run(
     (более узкой) выдаче, а не просто повторяет тот же самый запрос.
     """
     _emit(on_progress, f"Searching sources for: {sub_question.text}…")
-    discovered = _discover(sub_question, sources, discovery_limit or config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE)
+    discovered = _discover(
+        sub_question, sources, discovery_limit or config.FUNNEL_DISCOVERY_LIMIT_PER_SOURCE,
+        health=state.source_health, on_progress=on_progress,
+    )
     new_candidates = state.add_candidates(discovered)
     survivors = _triage(sub_question, new_candidates)
     _emit(

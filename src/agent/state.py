@@ -68,6 +68,46 @@ class Budget:
 
 
 @dataclass
+class SourceHealth:
+    """Кто из источников уже показал, что сейчас не работает — на один прогон.
+
+    Воронка переживает падение источника (ловит и идёт дальше), но
+    продолжает звать его снова: на каждый подвопрос, на каждом проходе.
+    Замерено на живом прогоне: Semantic Scholar без ключа ответил на 1
+    вопрос из 4, а каждая неудачная попытка стоит ~6 секунд одного только
+    сна между ретраями (`_MAX_RETRIES` с экспоненциальным бэкоффом). При 4
+    подвопросах и 3 проходах это больше минуты ожидания источника, который
+    уже дал понять, что недоступен.
+
+    Счётчик именно ПОДРЯД идущих неудач: разовый таймаут не должен
+    вычёркивать источник до конца прогона, а стабильный отказ — должен.
+    Успех обнуляет счётчик, потому что троттлинг отпускает.
+
+    Состояние живёт на прогоне, а не в модуле: глобальный счётчик пережил бы
+    сам запрос и вычёркивал источник в следующем прогоне на основании давно
+    прошедшей аварии.
+    """
+
+    consecutive_failures: dict[str, int] = field(default_factory=dict)
+    disabled: list[str] = field(default_factory=list)
+
+    def record_failure(self, source_name: str) -> bool:
+        """Отметить неудачу. `True` — источник только что отключён."""
+        count = self.consecutive_failures.get(source_name, 0) + 1
+        self.consecutive_failures[source_name] = count
+        if count >= config.SOURCE_FAILURE_LIMIT and source_name not in self.disabled:
+            self.disabled.append(source_name)
+            return True
+        return False
+
+    def record_success(self, source_name: str) -> None:
+        self.consecutive_failures[source_name] = 0
+
+    def is_disabled(self, source_name: str) -> bool:
+        return source_name in self.disabled
+
+
+@dataclass
 class ResearchState:
     question: str
     budget: Budget = field(default_factory=Budget)
@@ -78,6 +118,7 @@ class ResearchState:
     gaps: list[str] = field(default_factory=list)
     history: list[tuple[str, str]] = field(default_factory=list)
     iterations: int = 0
+    source_health: SourceHealth = field(default_factory=SourceHealth)
     _candidate_ids: set[str] = field(default_factory=set, repr=False)
     _started_at: float = field(default_factory=time.monotonic, repr=False)
 
