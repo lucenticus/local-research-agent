@@ -284,3 +284,32 @@ def test_eval_budget_drops_the_wall_clock_limit_but_keeps_the_others():
     b = eval_budget()
     assert b.max_seconds is None
     assert b.max_iterations > 0 and b.max_deep_reads > 0
+
+
+def test_a_freshly_created_cache_is_not_treated_as_absent(tmp_path, monkeypatch):
+    """DiscoveryCache имеет __len__, поэтому пустой кэш ложен — а пустой он
+    ровно в начале записи. `cache or default` подменял его выключенным, и
+    девятиминутный прогон записи вернул пустой файл, отчитавшись об успехе.
+    """
+    from src.sources.replay import MODE_RECORD, DiscoveryCache
+    from evals import run_quality
+
+    cache = DiscoveryCache(tmp_path / "f.json", mode=MODE_RECORD)
+    assert not cache, "предпосылка теста: пустой кэш действительно ложен"
+
+    seen: dict = {}
+
+    def _fake_run_research(question, store, **kw):
+        seen["sources_given"] = kw.get("sources")
+        raise RuntimeError("дальше не нужно")
+
+    monkeypatch.setattr(run_quality, "run_research", _fake_run_research)
+    monkeypatch.setattr(run_quality, "QdrantStore", lambda **kw: _NoopStore())
+    run_quality.evaluate_case({"id": "q", "question": "q?"}, cache)
+
+    assert seen["sources_given"] is not None, "источники должны быть обёрнуты фикстурами"
+
+
+class _NoopStore:
+    def rebuild(self, docs):
+        pass

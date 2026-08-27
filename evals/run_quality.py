@@ -75,7 +75,12 @@ def evaluate_case(case: dict[str, Any], cache: DiscoveryCache | None = None) -> 
     store = QdrantStore(collection_name=config.QDRANT_EVAL_COLLECTION)
     store.rebuild([])  # удаляет коллекцию целиком
 
-    cache = cache or DiscoveryCache("/dev/null", mode=MODE_OFF)
+    # `is None`, а не `or`: у DiscoveryCache есть __len__, поэтому ПУСТОЙ кэш —
+    # ровно тот, с которого начинается запись, — ложен, и `or` молча подменял
+    # его выключенным. Прогон при этом выглядел совершенно нормально и
+    # отчитывался об успехе, записав ноль фикстур (поймано на 9-минутном
+    # прогоне записи, который вернул пустой файл).
+    cache = DiscoveryCache("/dev/null", mode=MODE_OFF) if cache is None else cache
     started = time.perf_counter()
     error = None
     try:
@@ -224,6 +229,11 @@ def main() -> None:
     if mode == MODE_RECORD:
         cache.save()
         print(f"\nФикстур записано: {len(cache)} → {cache.path}")
+        if not len(cache):
+            # Запись без единой записи — не «пустой результат», а сломанный
+            # прогон: замораживать нечего, и следующий replay тихо уйдёт в
+            # живую сеть целиком. Молчать об этом нельзя.
+            raise SystemExit("ОШИБКА: записано ноль фикстур — прогон не заморозил ничего")
     if cache.misses:
         counts = cache.miss_counts()
         print(f"\n⚠ промахов фикстур: {len(cache.misses)}")
