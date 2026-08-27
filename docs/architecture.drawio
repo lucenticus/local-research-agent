@@ -1,0 +1,171 @@
+<mxfile host="app.diagrams.net" modified="2026-08-27T00:00:00.000Z" agent="Claude" version="24.0.0">
+  <diagram name="local-research-agent" id="lra-architecture">
+    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1640" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ==================== LEGEND ==================== -->
+        <mxCell id="legend" value="&lt;b&gt;local-research-agent&lt;/b&gt; — реальная архитектура против канонической 22-узловой схемы. &amp;nbsp; &amp;nbsp; &lt;span style=&quot;color:#065F46&quot;&gt;■ есть&lt;/span&gt; &amp;nbsp; &lt;span style=&quot;color:#B45309&quot;&gt;■ частично&lt;/span&gt; &amp;nbsp; &lt;span style=&quot;color:#B91C1C&quot;&gt;■ нет&lt;/span&gt; &amp;nbsp;·&amp;nbsp; в узлах указан реальный модуль" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#CBD5E1;fontSize=12;align=left;verticalAlign=middle;spacingLeft=12;fontColor=#0F172A;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="1360" height="36" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== PLANE CONTAINERS ==================== -->
+        <mxCell id="cp" value="CONTROL PLANE · ОРКЕСТРАЦИЯ АГЕНТА" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#BFDBFE;verticalAlign=top;align=left;fontStyle=1;fontSize=13;spacingLeft=12;spacingTop=8;fontColor=#1E3A8A;" vertex="1" parent="1">
+          <mxGeometry x="40" y="95" width="1360" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="loop" value="AGENT LOOP · agent/loop.py — LangGraph StateGraph: plan → run_pass* → check_faithfulness → finalize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#A78BFA;verticalAlign=top;align=left;fontStyle=1;fontSize=12;spacingLeft=12;spacingTop=8;fontColor=#5B21B6;" vertex="1" parent="1">
+          <mxGeometry x="60" y="230" width="790" height="350" as="geometry" />
+        </mxCell>
+        <mxCell id="tool" value="TOOL LAYER · sources/ за единым интерфейсом (Source.discover → LangChain StructuredTool)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#C7D2FE;verticalAlign=top;align=left;fontStyle=1;fontSize=13;spacingLeft=12;spacingTop=8;fontColor=#3730A3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="658" width="1360" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="core" value="RETRIEVAL CORE · ВОРОНКА (recall → precision) — store/qdrant_store.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#E4E4E7;verticalAlign=top;align=left;fontStyle=1;fontSize=13;spacingLeft=12;spacingTop=8;fontColor=#3F3F46;" vertex="1" parent="1">
+          <mxGeometry x="40" y="795" width="1360" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="data" value="DATA PLANE · ingest/ — конвейер, но НЕ только офлайновый (см. три пути справа)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F4F5;strokeColor=#E4E4E7;verticalAlign=top;align=left;fontStyle=1;fontSize=13;spacingLeft=12;spacingTop=8;fontColor=#3F3F46;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1120" width="1360" height="175" as="geometry" />
+        </mxCell>
+        <mxCell id="cross" value="CROSS-CUTTING · СКВОЗНЫЕ ПОДСИСТЕМЫ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#E4E4E7;verticalAlign=top;align=left;fontStyle=1;fontSize=13;spacingLeft=12;spacingTop=8;fontColor=#3F3F46;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1310" width="1360" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== CONTROL PLANE NODES ==================== -->
+        <mxCell id="req" value="ЗАПРОС" style="ellipse;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#60A5FA;fontSize=12;fontStyle=1;fontColor=#1E3A8A;" vertex="1" parent="1">
+          <mxGeometry x="60" y="150" width="105" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="n1" value="&lt;b&gt;1 · Query Intake&lt;/b&gt; 🟡&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;инлайн в cli.py / research_runner.py, отдельного модуля нет. Кореференция follow-up — через историю в ResearchState&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#F59E0B;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="190" y="140" width="230" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="n2" value="&lt;b&gt;2 · Complexity Router&lt;/b&gt; ⬜&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#991B1B&quot;&gt;ОТСУТСТВУЕТ. direct / clarify / search не решается автоматически&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF2F2;strokeColor=#EF4444;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="440" y="140" width="235" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="branch" value="&lt;b&gt;Режим выбирает человек&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;команда cli: ask / research / digest&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#CBD5E1;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="695" y="140" width="145" height="66" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n3" value="&lt;b&gt;3 · Planner&lt;/b&gt; 🟡 &lt;span style=&quot;font-size:10px&quot;&gt;planner.py&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;детерминированный код, НЕ LLM. Плоский список подвопросов — не DAG с зависимостями&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#F59E0B;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="78" y="272" width="225" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="n5" value="&lt;b&gt;5 · Reformulation&lt;/b&gt; 🟡 &lt;span style=&quot;font-size:10px&quot;&gt;funnel.py&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;только RU→EN перевод подвопроса (иначе arXiv/S2 дают ноль). HyDE / expansion / повтор при промахе — нет&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#F59E0B;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="315" y="272" width="225" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="ndec" value="&lt;b&gt;Tool-call decision&lt;/b&gt; ⬜&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#991B1B&quot;&gt;выбора нет: воронка дёргает ВСЕ источники на каждый подвопрос, параллельно по смыслу — последовательно по факту&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF2F2;strokeColor=#EF4444;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="552" y="272" width="225" height="64" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n6" value="&lt;b&gt;6 · Sufficiency / gap-check&lt;/b&gt; ✅ &lt;span style=&quot;font-size:10px&quot;&gt;loop.py&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;подвопрос закрыт, когда retrieval прошёл порог реранкера (0.5) минимум по 3 РАЗНЫМ источникам + гейт faithfulness.&lt;br&gt;Двойной стоп: «достаточно» ИЛИ «бюджет исчерпан»&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="78" y="352" width="350" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="n20" value="&lt;b&gt;20 · Working Memory / State&lt;/b&gt; ✅ &lt;span style=&quot;font-size:10px&quot;&gt;state.py&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;ResearchState: подвопросы, кандидаты, read_ids, findings, бюджет, история.&lt;br&gt;Инварианты: один id не читается дважды · цикл всегда останавливается&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="440" y="352" width="337" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="budget" value="⏱ &lt;b&gt;Бюджет&lt;/b&gt; ✅ hard-cap: итераций · deep-read · секунд &amp;nbsp;|&amp;nbsp; ⛔ каскада моделей и параллелизма веток НЕТ — упирается в инвариант памяти ниже" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF9C3;strokeColor=#FDE047;fontSize=11;align=left;verticalAlign=middle;spacingLeft=8;fontColor=#713F12;" vertex="1" parent="1">
+          <mxGeometry x="78" y="434" width="545" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="n8" value="&lt;b&gt;8 · Error Recovery&lt;/b&gt; 🟡 &amp;nbsp;есть: источник упал → идём дальше на остальных · MCP-fetch fallback · стоп по бюджету&lt;br&gt;&lt;span style=&quot;color:#991B1B&quot;&gt;нет: переформулировки на пустом discovery · предъявления противоречий между источниками · circuit breaker&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1F2;strokeColor=#FDA4AF;fontSize=11;align=left;verticalAlign=middle;spacingLeft=8;fontColor=#9F1239;" vertex="1" parent="1">
+          <mxGeometry x="78" y="482" width="545" height="58" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n7" value="&lt;b&gt;7 · Answer Synthesis&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:11px;color:#065F46&quot;&gt;&lt;br&gt;&lt;b&gt;synthesize.py&lt;/b&gt; — LCEL-цепочка (prompt | ChatMLX | parser),&lt;br&gt;ответ строго по контексту, цитаты [n] на каждое утверждение&lt;br&gt;&lt;br&gt;&lt;b&gt;evaluate.py&lt;/b&gt; — самопроверка ОДНОГО прогона:&lt;br&gt;• citation coverage — доля утверждений с [n]&lt;br&gt;• faithfulness — подтверждает ли процитированный чанк утверждение&lt;br&gt;&amp;nbsp; &amp;nbsp;(переиспользует реранкер, не отдельная NLI-модель)&lt;br&gt;&lt;br&gt;низкий faithfulness → переоткрывает подвопросы на ещё один проход&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=13;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#065F46;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="870" y="255" width="460" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== MEMORY INVARIANT ==================== -->
+        <mxCell id="mem" value="🧠 &lt;b&gt;ИНВАРИАНТ ПАМЯТИ (16 ГБ) — определяющее ограничение системы, в каноне его нет&lt;/b&gt; &amp;nbsp;·&amp;nbsp; LLM (Qwen3.5-4B Q4) и эмбеддер (bge-m3) РЕЗИДЕНТНЫ &amp;nbsp;·&amp;nbsp; реранкер load → score → release на каждый вызов &amp;nbsp;·&amp;nbsp; двух тяжёлых моделей в памяти одновременно не бывает" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#EA580C;fontSize=11;align=left;verticalAlign=middle;spacingLeft=10;fontColor=#7C2D12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="608" width="1360" height="34" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== TOOL LAYER ==================== -->
+        <mxCell id="n9a" value="&lt;b&gt;9 · Научные источники&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;arxiv.py · semantic_scholar.py · crossref.py · wikipedia.py&lt;br&gt;только метаданные — полный текст лишь для прошедших триаж&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="60" y="700" width="430" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="n9b" value="&lt;b&gt;9 · Веб + обогащение&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;web.py (SearXNG) / tavily.py · pdf.py (полный текст, ссылки, авторы)&lt;br&gt;citations.py — OpenAlex · github.py — звёзды&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="505" y="700" width="390" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="n9c" value="&lt;b&gt;9 · MCP в обе стороны&lt;/b&gt; ✅ &lt;span style=&quot;font-size:10px;color:#991B1B&quot;&gt;(в каноне этого нет)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;клиент: fetch-сервер, filesystem, github_mcp.py — все off by default&lt;br&gt;&lt;b&gt;сервер: mcp_server.py — сам агент как инструмент для чужого MCP-клиента&lt;/b&gt;&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#6366F1;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="910" y="700" width="470" height="62" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== RETRIEVAL CORE ==================== -->
+        <mxCell id="n10" value="&lt;b&gt;10 · Sparse&lt;/b&gt; ✅ &lt;span style=&quot;font-size:10px;color:#991B1B&quot;&gt;НЕ BM25/SPLADE&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;learned lexical weights самой bge-m3 — тот же forward pass, что и dense. Qdrant не умеет BM25-по-корпусу, как умел прежний LanceDB+FTS&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="845" width="600" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="n11" value="&lt;b&gt;11 · Dense&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;bge-m3 dense (1024) на MPS + ANN в Qdrant. Семантика, парафразы, кросс-язык&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="700" y="845" width="640" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="n12" value="&lt;b&gt;12 · Fusion — RRF&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;слияние по рангам в Qdrant Query API (prefetch dense + sparse → FusionQuery)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#93C5FD;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="440" y="928" width="480" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="n13" value="&lt;b&gt;13 · Reranker — cross-encoder&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;Qwen3-Reranker-0.6B (MLX). Масштаб 10 → 5, не 100 → k. Тот же порог 0.5 служит и gap-оценке, и faithfulness&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#93C5FD;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="440" y="992" width="480" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="n14" value="&lt;b&gt;14 · Context Select + Dedup&lt;/b&gt; ✅ &lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;hard-cap контекста синтеза + дедуп по read_ids&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#93C5FD;fontSize=12;align=left;verticalAlign=middle;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="440" y="1056" width="480" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="paths" value="&lt;b style=&quot;color:#1D4ED8&quot;&gt;⚠ ТРИ ПУТИ RETRIEVAL, а не один&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#334155&quot;&gt;В каноне data plane — офлайн-конвейер под индекс. Здесь так работает лишь один путь из трёх:&lt;br&gt;&lt;br&gt;&lt;b&gt;1. research (funnel)&lt;/b&gt; — JIT: индекс заранее НЕ строится, конвейер 15-18 крутится внутри цикла.&lt;br&gt;&lt;br&gt;&lt;b&gt;2. ask&lt;/b&gt; — классический RAG поверх заранее построенного индекса. Единственный «канонический» путь.&lt;br&gt;&lt;br&gt;&lt;b&gt;3. digest&lt;/b&gt; — своя коллекция, окно недели кэшируется целиком. Воронки нет: нет подвопроса, к которому мерить релевантность.&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontSize=12;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="930" y="915" width="410" height="188" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== DATA PLANE ==================== -->
+        <mxCell id="n15" value="&lt;b&gt;15 · Ingestion&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;sources/pdf.py, corpus/&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1170" width="240" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="n16" value="&lt;b&gt;16 · Clean / Extract&lt;/b&gt; 🟡&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;ingest/extract.py — секции, режет References/Acks. LaTeX/таблицы — не проверено&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#F59E0B;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="330" y="1170" width="240" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="n17" value="&lt;b&gt;17 · Chunking&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;ingest/chunk.py — по границам секций&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="590" y="1170" width="230" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="n18" value="&lt;b&gt;18 · Embedding&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;bge-m3, dense+sparse одним проходом&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="840" y="1170" width="230" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="n19" value="&lt;b&gt;19 · Indexing + Freshness&lt;/b&gt; ✅&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;Qdrant, 3 коллекции: chunks · research_chunks · digest_pool. Свежесть — буст в триаже&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="1170" width="290" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="reindex" value="Коллекции разделены сознательно: demo-корпус из corpus/ просачивался в источники реальных research-ответов, поймано реальным прогоном. Смена энкодера ⇒ реиндексация — это миграция, не деплой." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F5F9;strokeColor=#CBD5E1;fontSize=10;align=left;verticalAlign=middle;spacingLeft=8;fontColor=#334155;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1240" width="1310" height="34" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== CROSS-CUTTING ==================== -->
+        <mxCell id="n21" value="&lt;b&gt;21 · Cache&lt;/b&gt; 🟡&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;есть: Qdrant персистентен между прогонами · digest кэширует окно недели целиком (82с → 0.5с) · read_ids не читает один id дважды&lt;br&gt;&lt;span style=&quot;color:#991B1B&quot;&gt;нет: кэша ответов discovery-API — одинаковые запросы уходят в сеть повторно&lt;/span&gt;&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#F59E0B;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1355" width="640" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="n22" value="&lt;b&gt;22 · Observability + Eval&lt;/b&gt; 🟡&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#475569&quot;&gt;есть: LangSmith-трейс всего графа одним переключателем · progress.py (пошаговый лог в CLI/UI) · evaluate.py — оценка ОДНОГО прогона · scripts/eval_* на золотом наборе, но только для пути &lt;b&gt;ask&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;color:#991B1B&quot;&gt;нет: регресс-харнесса на research — coverage подтем / cost / latency / дифф между прогонами ← в работе&lt;/span&gt;&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#F59E0B;fontSize=12;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="730" y="1355" width="650" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== NOT APPLICABLE ==================== -->
+        <mxCell id="na" value="&lt;b&gt;НЕ ПРИМЕНИМО к этой системе&lt;/b&gt; — пункты канона, которые здесь не имеют смысла (а не «не сделаны»)&lt;br&gt;&lt;span style=&quot;font-size:11px;color:#334155&quot;&gt;&lt;br&gt;&lt;b&gt;каскад моделей&lt;/b&gt; и &lt;b&gt;параллелизм веток DAG&lt;/b&gt; — одна резидентная 4B на 16 ГБ; вторая модель нарушила бы инвариант памяти. Планировщик и так отдаёт плоский список, а не DAG.&lt;br&gt;&lt;b&gt;A/B-тесты&lt;/b&gt; — один локальный пользователь, трафика для сплита нет. &amp;nbsp;·&amp;nbsp; &lt;b&gt;p99 задержки&lt;/b&gt; — на выборке в десятки запросов это просто максимум.&lt;br&gt;&lt;b&gt;стоимость в $&lt;/b&gt; — модели локальные; считать надо вызовы, токены и время, а платный тут только внешний веб-поиск (Tavily). &amp;nbsp;·&amp;nbsp; &lt;b&gt;кэш популярных запросов&lt;/b&gt; — популярных запросов не бывает при одном пользователе.&lt;br&gt;&lt;b&gt;структурированные источники (БД, записи)&lt;/b&gt; — предметная область научная, реляционных источников нет.&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAF9;strokeColor=#A8A29E;fontSize=12;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontColor=#44403C;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1480" width="1360" height="128" as="geometry" />
+        </mxCell>
+
+        <!-- ==================== EDGES ==================== -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="req" target="n1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n1" target="n2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#94A3B8;endArrow=block;dashed=1;" edge="1" parent="1" source="n2" target="branch"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" value="research" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;fontSize=10;fontColor=#475569;exitX=0.15;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n2" target="n3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7C3AED;endArrow=block;" edge="1" parent="1" source="n3" target="n5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7C3AED;endArrow=block;" edge="1" parent="1" source="n5" target="ndec"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4F46E5;endArrow=block;fontSize=10;fontColor=#475569;exitX=0.85;exitY=1;exitDx=0;exitDy=0;entryX=0.85;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="ndec" target="n9a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6366F1;endArrow=block;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.3;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n9a" target="n10"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6366F1;endArrow=block;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.3;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n9b" target="n11"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.3;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n10" target="n12"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.7;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n11" target="n12"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n12" target="n13"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n13" target="n14"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e14" value="факты → state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0891B2;endArrow=block;fontSize=10;fontColor=#0E7490;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n14" target="n20"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e15" value="replan / добор" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#7C3AED;endArrow=block;dashed=1;fontSize=10;fontColor=#6D28D9;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n6" target="n3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e16" value="достаточно" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#059669;endArrow=block;fontSize=10;fontColor=#065F46;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n20" target="n7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e17" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#A78BFA;endArrow=block;dashed=1;fontSize=10;fontColor=#6D28D9;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n20" target="n6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e18" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#94A3B8;endArrow=block;dashed=1;fontSize=10;fontColor=#475569;exitX=0.95;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n19" target="n11"><mxGeometry relative="1" as="geometry" /></mxCell>
+                <mxCell id="e20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n15" target="n16"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e21" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n16" target="n17"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n17" target="n18"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e23" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#64748B;endArrow=block;" edge="1" parent="1" source="n18" target="n19"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
