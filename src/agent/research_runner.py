@@ -220,6 +220,38 @@ def _candidate_summaries(state) -> list[CandidateSummary]:
     return summaries
 
 
+def run_ask(
+    question: str,
+    store: QdrantStore,
+    on_progress: ProgressCallback | None = None,
+) -> ResearchResult:
+    """Ответ по уже построенному локальному индексу — без интернета и воронки.
+
+    Возвращает тот же `ResearchResult`, что и `run_research`, хотя половина
+    полей заведомо пуста: воронки не было, значит нет ни кандидатов, ни
+    итераций. Это не подгонка под формат, а следствие того, что вызывающему
+    (веб-джоб, MCP-инструмент) важен ответ с источниками, а не то, каким
+    путём он получен, — иначе каждый из них заводил бы свою вторую сборку
+    ответа поверх retrieve/synthesize.
+
+    `iterations=0` здесь — честный ноль: цикл исследования не запускался.
+    """
+    if on_progress:
+        on_progress("Отвечаю по локальному индексу")
+    hits = retrieve(store, question)
+    answer = synthesize(question, hits)
+    return ResearchResult(
+        answer=answer,
+        sources=unique_sources(hits),
+        context=hits,
+        candidates=[],
+        gaps=[],
+        iterations=0,
+        read_count=0,
+        candidates_count=0,
+    )
+
+
 def run_research(
     question: str,
     store: QdrantStore,

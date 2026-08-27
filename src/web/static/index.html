@@ -129,6 +129,12 @@
     vertical-align: -1px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .route-badge {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 4px 0 10px;
+  }
+
   .answer {
     white-space: pre-wrap;
     word-break: break-word;
@@ -459,7 +465,7 @@ function renderProgress(messages, running) {
 // Каждый ход диалога (исходный вопрос + каждый follow-up) - своя панель,
 // добавляется в #turns, а не затирает предыдущую - иначе видно только
 // последний ответ и теряется нить уточнений.
-function renderTurn(question, result) {
+function renderTurn(question, result, route, routeReason) {
   const panel = document.createElement("div");
   panel.className = "panel";
 
@@ -467,6 +473,17 @@ function renderTurn(question, result) {
   q.className = "turn-question";
   q.textContent = question;
   panel.appendChild(q);
+
+  // Маршрут показывается всегда, а не только при ask: ответ за секунды
+  // там, где ожидались минуты, без объяснения выглядит как сбой.
+  if (route) {
+    const badge = document.createElement("div");
+    badge.className = "route-badge";
+    badge.textContent = route === "ask"
+      ? `Ответ из локального индекса — ${routeReason || ""}`
+      : `Полное исследование — ${routeReason || ""}`;
+    panel.appendChild(badge);
+  }
 
   const answer = document.createElement("div");
   answer.className = "answer";
@@ -516,12 +533,16 @@ function renderTurn(question, result) {
   });
   panel.appendChild(sourcesEl);
 
-  const stats = document.createElement("div");
-  stats.className = "stats";
-  stats.textContent =
-    `Iterations: ${result.iterations} · sources read: ${result.read_count} · ` +
-    `candidates found: ${result.candidates_count}`;
-  panel.appendChild(stats);
+  // Статистика воронки — только там, где воронка была. На ask-маршруте это
+  // честные нули, но читаются они как "ничего не нашлось", хотя ответ есть.
+  if (route !== "ask") {
+    const stats = document.createElement("div");
+    stats.className = "stats";
+    stats.textContent =
+      `Iterations: ${result.iterations} · sources read: ${result.read_count} · ` +
+      `candidates found: ${result.candidates_count}`;
+    panel.appendChild(stats);
+  }
 
   turnsEl.appendChild(panel);
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -617,7 +638,7 @@ async function poll(jobId, question) {
     pollTimer = setTimeout(() => poll(jobId, question), 1000);
   } else if (data.status === "done") {
     sessionId = data.session_id;
-    renderTurn(question, data.result);
+    renderTurn(question, data.result, data.route, data.route_reason);
     setBusy(false);
   } else {
     renderError(data.error || "unknown error");

@@ -1,4 +1,8 @@
-"""Юнит-тесты src/web/app.py — run_research замокан (офлайн, без реальных моделей).
+"""Юнит-тесты src/web/app.py — run_research и роутер замоканы (офлайн).
+
+Роутер мокать ОБЯЗАТЕЛЬНО: его пробный retrieval поднимает эмбеддер и
+реранкер, то есть настоящие модели в фоновом потоке теста. Не замоканный,
+он валит прогон сегфолтом внутри FlagEmbedding, а не понятной ошибкой.
 
 Фоновый поток реального Job'а требует ожидания в тесте — polling с коротким
 таймаутом, а не sleep вслепую.
@@ -48,7 +52,15 @@ def _wait_until_item_analysis_done(client: TestClient, job_id: str, item_id: str
     raise AssertionError("item analysis did not finish in time")
 
 
+def _route_to(monkeypatch, route: str, reason: str = "тест"):
+    monkeypatch.setattr(app_module.router, "route",
+                        lambda q, store=None: app_module.router.Route(route, reason))
+
+
 def _reset_app_state(monkeypatch):
+    # По умолчанию — research: маршрут, который был единственным до узла 2,
+    # чтобы существующие тесты проверяли ровно то, что проверяли.
+    _route_to(monkeypatch, app_module.router.ROUTE_RESEARCH)
     monkeypatch.setattr(app_module, "_jobs", {})
     monkeypatch.setattr(app_module, "_sessions", {})
     monkeypatch.setattr(app_module, "_digest_jobs", {})
@@ -486,3 +498,75 @@ def test_get_item_analysis_returns_404_before_any_run(monkeypatch):
 
     resp = client.get(f"/api/digest/{job_id}/items/arxiv:1/analyze")
     assert resp.status_code == 404
+
+
+def test_unclear_question_is_rejected_without_starting_a_job(monkeypatch):
+    """`clarify` решается лексически, без моделей — заводить ради него джоб и
+    занимать единственный тяжёлый слот значило бы изображать работу там, где
+    ответ известен сразу."""
+    _reset_app_state(monkeypatch)
+    _route_to(monkeypatch, app_module.router.ROUTE_CLARIFY, "искать не по чему")
+
+    def _fail(*a, **kw):
+        raise AssertionError("джоб не должен создаваться")
+
+    monkeypatch.setattr(app_module, "run_research", _fail)
+    client = TestClient(app_module.app)
+
+    response = client.post("/api/jobs", json={"question": "что?"})
+    assert response.status_code == 400
+    assert "искать не по чему" in response.json()["detail"]
+    assert app_module._jobs == {}
+    assert app_module._current_job_id is None
+
+
+def test_ask_route_answers_locally_without_running_research(monkeypatch):
+    """Вопрос, на который уже отвечает локальный корпус, не должен жечь
+    минуты исследования — вкладка Research раньше уходила в интернет всегда."""
+    _reset_app_state(monkeypatch)
+    _route_to(monkeypatch, app_module.router.ROUTE_ASK, "локальный корпус отвечает")
+
+    def _fail(*a, **kw):
+        raise AssertionError("research не должен запускаться на ask-маршруте")
+
+    def fake_run_ask(question, store, on_progress=None):
+        return ResearchResult(
+            answer="из локального индекса", sources=[SourceRef(title="Doc")],
+            candidates=[], gaps=[], iterations=0, read_count=0, candidates_count=0,
+        )
+
+    monkeypatch.setattr(app_module, "run_research", _fail)
+    monkeypatch.setattr(app_module, "run_ask", fake_run_ask)
+    monkeypatch.setattr(app_module, "QdrantStore", lambda collection_name=None: object())
+    client = TestClient(app_module.app)
+
+    job_id = client.post("/api/jobs", json={"question": "чем полезен RAG"}).json()["job_id"]
+    data = _wait_until_done(client, job_id)
+
+    assert data["status"] == "done"
+    assert data["route"] == "ask"
+    assert data["route_reason"] == "локальный корпус отвечает"
+    assert data["result"]["answer"] == "из локального индекса"
+    assert data["result"]["iterations"] == 0
+
+
+def test_the_chosen_route_is_visible_to_the_user(monkeypatch):
+    """Пользователь, ждавший минут исследования и получивший ответ за
+    секунды, должен видеть, что решение принято и на каком основании."""
+    _reset_app_state(monkeypatch)
+    _route_to(monkeypatch, app_module.router.ROUTE_RESEARCH, "корпус не покрывает вопрос")
+
+    def fake_run_research(question, store, on_progress=None):
+        return ResearchResult(answer="a", sources=[], candidates=[], gaps=[],
+                              iterations=1, read_count=0, candidates_count=0)
+
+    monkeypatch.setattr(app_module, "run_research", fake_run_research)
+    monkeypatch.setattr(app_module, "QdrantStore", lambda collection_name=None: object())
+    client = TestClient(app_module.app)
+
+    job_id = client.post("/api/jobs", json={"question": "что нового в MoE"}).json()["job_id"]
+    data = _wait_until_done(client, job_id)
+
+    assert data["route"] == "research"
+    assert data["route_reason"] == "корпус не покрывает вопрос"
+    assert any("Маршрут: research" in line for line in data["progress"])

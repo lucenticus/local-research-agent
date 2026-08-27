@@ -40,8 +40,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config
+from ..agent import router
 from ..agent.digest import DigestResult, ItemAnalysis, analyze_item, run_digest
-from ..agent.research_runner import ResearchResult, run_followup, run_research
+from ..agent.progress import ProgressCallback
+from ..agent.research_runner import ResearchResult, run_ask, run_followup, run_research
 from ..agent.state import ResearchState
 from ..providers import tracing
 from ..store.qdrant_store import QdrantStore
@@ -65,6 +67,11 @@ class Job:
     progress: list[str] = field(default_factory=list)
     result: ResearchResult | None = None
     error: str | None = None
+    # Куда роутер отправил вопрос и почему. Показывается пользователю: если
+    # он ждал минут исследования, а получил ответ за секунды, он должен
+    # видеть, что решение принято и на каком основании, а не гадать.
+    route: str | None = None
+    route_reason: str | None = None
 
 
 @dataclass
@@ -154,6 +161,8 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
             "read_count": job.result.read_count,
             "candidates_count": job.result.candidates_count,
         },
+        "route": job.route,
+        "route_reason": job.route_reason,
         "error": job.error,
     }
 
@@ -311,6 +320,42 @@ def _require_question(raw: str) -> str:
     return question
 
 
+def _reject_if_unclear(question: str) -> None:
+    """`clarify` решается здесь, а не в рабочем потоке: проверка чисто
+    лексическая (`router.content_words`), моделей не трогает и стоит
+    микросекунды. Заводить ради неё джоб, занимать единственный слот и
+    заставлять фронтенд опрашивать статус — значит изображать работу там,
+    где ответ известен сразу."""
+    decision = router.route(question)
+    if decision.route == router.ROUTE_CLARIFY:
+        raise HTTPException(400, f"Уточните вопрос: {decision.reason}")
+
+
+def _routed_run(job: Job, session: Session) -> Any:
+    """Выбор `ask`/`research` — внутри рабочего потока, а не в обработчике.
+
+    Пробный retrieval поднимает эмбеддер и реранкер (§1 CLAUDE.md: тяжёлые
+    модели по одной), поэтому он обязан идти под уже занятым слотом. Делать
+    это в HTTP-обработчике значило бы грузить модели параллельно с чужим
+    прогоном и держать запрос на секунды.
+
+    Пробуется ОСНОВНОЙ индекс (`QdrantStore()`, тот же, что у CLI `ask`), а
+    не research-коллекция сессии: вопрос «отвечает ли на это уже собранный
+    корпус» — про него.
+    """
+
+    def run(on_progress: ProgressCallback) -> ResearchResult:
+        decision = router.route(job.question, QdrantStore())
+        with _jobs_lock:
+            job.route, job.route_reason = decision.route, decision.reason
+        on_progress(f"Маршрут: {decision.route} — {decision.reason}")
+        if decision.route == router.ROUTE_ASK:
+            return run_ask(job.question, QdrantStore(), on_progress=on_progress)
+        return run_research(job.question, session.store, on_progress=on_progress)
+
+    return run
+
+
 def _require_free_slot() -> None:
     """Вызывается уже под `_jobs_lock`. Держит инвариант "не больше одного
     тяжёлого прогона одновременно" (§1 CLAUDE.md — нельзя грузить/держать
@@ -338,6 +383,7 @@ def index() -> FileResponse:
 @app.post("/api/jobs")
 def create_job(payload: ResearchRequest) -> dict[str, Any]:
     question = _require_question(payload.question)
+    _reject_if_unclear(question)
 
     with _jobs_lock:
         _require_free_slot()
@@ -349,8 +395,7 @@ def create_job(payload: ResearchRequest) -> dict[str, Any]:
         session = Session(id=session_id, store=QdrantStore(collection_name=config.QDRANT_RESEARCH_COLLECTION))
         _sessions[session_id] = session
 
-    run = lambda on_progress: run_research(job.question, session.store, on_progress=on_progress)
-    threading.Thread(target=_run_job, args=(job, session, run), daemon=True).start()
+    threading.Thread(target=_run_job, args=(job, session, _routed_run(job, session)), daemon=True).start()
     return {"job_id": job.id, "session_id": session_id}
 
 
