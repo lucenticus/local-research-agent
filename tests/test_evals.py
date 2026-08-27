@@ -1,0 +1,157 @@
+"""Юнит-тесты логики eval-харнесса (evals/) — офлайн, реранкер и research замоканы.
+
+Сам харнесс тоже код, и ошибка в нём тише ошибки в агенте: он не падает, а
+показывает неверные числа, которым потом верят.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from evals import run_discovery, run_quality
+
+
+def test_golden_set_is_wellformed():
+    """Схема золотого набора — контракт между вопросами и всеми раннерами."""
+    cases = run_discovery.load_questions()
+    assert len(cases) >= 10, "меньше 10 вопросов — набор не репрезентативен"
+
+    ids = [c["id"] for c in cases]
+    assert len(ids) == len(set(ids)), "id должны быть уникальны: по ним идёт дифф между прогонами"
+
+    for c in cases:
+        assert c["question"].strip(), c["id"]
+        assert isinstance(c["expected_subtopics"], list), c["id"]
+        assert isinstance(c["expected_gaps"], bool), c["id"]
+        assert c["tags"], c["id"]
+        # Неотвечаемый вопрос не должен иметь ожидаемых подтем, иначе метрика
+        # покрытия требует раскрыть то, чего не существует.
+        if c["expected_gaps"]:
+            assert not c["expected_subtopics"], c["id"]
+
+
+def test_golden_set_covers_the_planned_slices():
+    tags = {t for c in run_discovery.load_questions() for t in c["tags"]}
+    for expected in ("en", "ru", "recency", "adversarial", "multi-hop", "comparison"):
+        assert expected in tags, f"нет ни одного вопроса со срезом {expected}"
+
+
+def test_load_questions_filters_by_tag():
+    ru = run_discovery.load_questions("ru")
+    assert ru and all("ru" in c["tags"] for c in ru)
+
+
+def test_subtopic_coverage_counts_confirmed_topics(monkeypatch):
+    monkeypatch.setattr(run_quality.rerank, "score_pairs", lambda pairs: [0.9, 0.1, 0.8])
+    covered, missed = run_quality.subtopic_coverage("ответ", ["a", "b", "c"])
+    assert covered == round(2 / 3, 3) or abs(covered - 2 / 3) < 1e-9
+    assert missed == ["b"]
+
+
+def test_subtopic_coverage_scores_topic_against_answer(monkeypatch):
+    """Порядок в паре важен: реранкер спрашивает «подтверждает ли документ
+    запрос», значит подтема — запрос, ответ — документ."""
+    captured = {}
+    monkeypatch.setattr(run_quality.rerank, "score_pairs",
+                        lambda pairs: (captured.setdefault("pairs", pairs), [0.9])[1])
+    run_quality.subtopic_coverage("текст ответа", ["ожидаемая подтема"])
+    assert captured["pairs"] == [("ожидаемая подтема", "текст ответа")]
+
+
+def test_subtopic_coverage_without_topics_is_not_a_penalty(monkeypatch):
+    """У неотвечаемых вопросов подтем нет — покрывать нечего, и штрафовать не за что."""
+    def _fail(pairs):
+        raise AssertionError("без подтем реранкер звать незачем")
+
+    monkeypatch.setattr(run_quality.rerank, "score_pairs", _fail)
+    assert run_quality.subtopic_coverage("ответ", []) == (1.0, [])
+
+
+def test_aggregate_skips_failed_cases_but_counts_them():
+    rows = [
+        {"id": "a", "wall_seconds": 10.0, "citation_coverage": 1.0, "faithfulness": 0.5,
+         "subtopic_coverage": 1.0, "gap_honest": None, "providers": {}},
+        {"id": "b", "error": "RuntimeError: boom", "wall_seconds": 2.0, "providers": {}},
+    ]
+    agg = run_quality.aggregate(rows)
+    assert agg["n_ok"] == 1 and agg["n_error"] == 1
+    assert agg["faithfulness"] == 0.5  # упавший вопрос не тянет среднее
+    assert agg["wall_seconds"]["max"] == 10.0
+
+
+def test_aggregate_reports_gap_honesty_only_for_adversarial_cases():
+    rows = [
+        {"id": "ok", "wall_seconds": 1.0, "gap_honest": None, "providers": {}},
+        {"id": "adv1", "wall_seconds": 1.0, "gap_honest": True, "providers": {}},
+        {"id": "adv2", "wall_seconds": 1.0, "gap_honest": False, "providers": {}},
+    ]
+    assert run_quality.aggregate(rows)["gap_honesty"] == 0.5
+
+
+def test_aggregate_sums_provider_cost_across_cases():
+    rows = [
+        {"id": "a", "wall_seconds": 1.0, "gap_honest": None,
+         "providers": {"llm.generate": {"calls": 2, "seconds": 3.0, "items": 0,
+                                        "prompt_tokens": 100, "completion_tokens": 20}}},
+        {"id": "b", "wall_seconds": 1.0, "gap_honest": None,
+         "providers": {"llm.generate": {"calls": 1, "seconds": 1.5, "items": 0,
+                                        "prompt_tokens": 50, "completion_tokens": 10}}},
+    ]
+    total = run_quality.aggregate(rows)["providers_total"]["llm.generate"]
+    assert total["calls"] == 3
+    assert total["seconds"] == 4.5
+    assert total["tokens"] == 180
+
+
+def test_aggregate_on_empty_rows_does_not_crash():
+    agg = run_quality.aggregate([])
+    assert agg["n_ok"] == 0 and agg["wall_seconds"] is None
+
+
+def test_discovery_aggregate_separates_empty_from_failed():
+    """Ключевое различие всего харнесса: источник, вернувший ноль, и источник,
+    который упал, — разные факты с разными причинами."""
+    rows = [
+        {"per_source": {"arxiv": 0, "s2": 0}, "per_errors": {"s2": ["HTTPError: 429"]}},
+        {"per_source": {"arxiv": 0, "s2": 0}, "per_errors": {"s2": ["HTTPError: 429"]}},
+    ]
+    agg = run_discovery.aggregate(rows)
+    assert agg["arxiv"]["hit_rate"] == 0.0 and agg["arxiv"]["error_rate"] == 0.0
+    assert agg["s2"]["hit_rate"] == 0.0 and agg["s2"]["error_rate"] == 1.0
+
+
+def test_each_case_starts_from_a_clean_index(monkeypatch):
+    """Замер на накопительной коллекции врёт: второй прогон того же вопроса
+    переиспользует скачанное первым и выглядит лучше без единой правки."""
+    calls = []
+
+    class _Store:
+        def __init__(self, collection_name=None):
+            calls.append(("init", collection_name))
+
+        def rebuild(self, chunks):
+            calls.append(("rebuild", tuple(chunks)))
+
+    monkeypatch.setattr(run_quality, "QdrantStore", _Store)
+    monkeypatch.setattr(run_quality, "run_research",
+                        lambda q, store: (_ for _ in ()).throw(RuntimeError("stop here")))
+
+    run_quality.evaluate_case({"id": "x", "question": "вопрос"})
+    assert ("init", run_quality.config.QDRANT_EVAL_COLLECTION) in calls
+    assert ("rebuild", ()) in calls, "коллекция должна очищаться перед вопросом"
+
+
+def test_error_row_has_the_same_shape_as_a_successful_one(monkeypatch):
+    """Строка с ошибкой должна быть той же формы: иначе на ней падает любой
+    потребитель — дифф, отчёт, внешний анализ."""
+    monkeypatch.setattr(run_quality, "QdrantStore", lambda collection_name=None: type(
+        "S", (), {"rebuild": lambda self, chunks: None})())
+    monkeypatch.setattr(run_quality, "run_research",
+                        lambda q, store: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    row = run_quality.evaluate_case({"id": "x", "question": "вопрос", "expected_gaps": False})
+    for key in ("id", "question", "citation_coverage", "faithfulness", "subtopic_coverage",
+                "gap_honest", "wall_seconds", "providers"):
+        assert key in row, key
+    assert row["error"].startswith("RuntimeError")
