@@ -23,6 +23,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from ._common import SourceUnavailable
 from .base import DiscoveredItem, Source
 
 # Сентинел «записи нет»: отличается от записанного None (например,
@@ -32,6 +33,15 @@ _MISS = object()
 MODE_OFF = "off"
 MODE_RECORD = "record"
 MODE_REPLAY = "replay"
+
+
+# Отметка «источник упал», а не «источник ответил пусто». Без неё падение не
+# оставляло в фикстуре НИЧЕГО: воронка ловит исключение и идёт дальше, запись
+# не происходит, и каждый последующий replay промахивается по этому ключу
+# вечно. Замерено: Semantic Scholar троттлил на 3 вопросах из 4, и эти
+# промахи не закрывались дозаписью — она помогает, только если источник вдруг
+# ответит.
+_ERROR_KEY = "__source_failed__"
 
 
 def _key(source_name: str, query: str, limit: int) -> str:
@@ -95,14 +105,34 @@ class DiscoveryCache:
         return self.mode == MODE_RECORD or (self.mode == MODE_REPLAY and self.top_up)
 
     def get(self, source_name: str, query: str, limit: int) -> list[DiscoveredItem] | None:
+        """Записанная выдача, `None` — записи нет.
+
+        Записанное падение источника воспроизводится падением: иначе прогон по
+        фикстурам видел бы мир, которого при записи не было."""
         raw = self._entries.get(_key(source_name, query, limit))
         if raw is None:
             self.misses.append(_key(source_name, query, limit))
             return None
+        if isinstance(raw, dict) and _ERROR_KEY in raw:
+            raise SourceUnavailable(raw[_ERROR_KEY])
         return [DiscoveredItem(**item) for item in raw]
 
     def put(self, source_name: str, query: str, limit: int, items: list[DiscoveredItem]) -> None:
         self._entries[_key(source_name, query, limit)] = [asdict(i) for i in items]
+
+    def put_failure(self, source_name: str, query: str, limit: int, error: Exception) -> None:
+        self._entries[_key(source_name, query, limit)] = {_ERROR_KEY: f"{type(error).__name__}: {error}"}
+
+    def failures(self) -> dict[str, int]:
+        """Сколько записей на источник — это записанные падения. Печатается
+        после записи: фикстура, где источник упал на большинстве вопросов,
+        технически валидна, но замер по ней меряет систему без этого
+        источника, и знать об этом надо до, а не после."""
+        counts: dict[str, int] = {}
+        for key, value in self._entries.items():
+            if key.startswith("discover|") and isinstance(value, dict) and _ERROR_KEY in value:
+                counts[key.split("|")[1]] = counts.get(key.split("|")[1], 0) + 1
+        return counts
 
     def miss_counts(self) -> dict[str, int]:
         """Промахи по типу вызова: discovery считается пустым источником, а
@@ -139,7 +169,14 @@ class CachedSource:
                 return cached
             if not self._cache.top_up:
                 return []
-        items = self._inner.discover(query, limit)
+        try:
+            items = self._inner.discover(query, limit)
+        except Exception as exc:
+            # Падение записывается и пробрасывается: воронка обрабатывает его
+            # так же, как без фикстур, а replay воспроизводит тот же мир.
+            if self._cache.writable:
+                self._cache.put_failure(self.name, query, limit, exc)
+            raise
         if self._cache.writable:
             self._cache.put(self.name, query, limit, items)
         return items

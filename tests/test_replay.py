@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from src.sources.base import DiscoveredItem
+import pytest
+
+from src.sources._common import SourceUnavailable
 from src.sources import replay as replay_module
 from src.sources.replay import (
     MODE_OFF,
@@ -154,3 +157,37 @@ def test_replay_without_top_up_does_not_touch_the_source(tmp_path):
     source._inner.discover = _fail
     assert source.discover("unknown", 5) == []
     assert cache.misses == ["discover|fake|5|unknown"]
+
+
+class _BrokenSource:
+    name = "broken"
+
+    def discover(self, query, limit):
+        raise RuntimeError("429 Too Many Requests")
+
+
+def test_a_failing_source_is_recorded_as_failing_not_as_missing(tmp_path):
+    """Падение источника воронка ловит и идёт дальше — раньше фикстура при
+    этом не получала НИЧЕГО, и каждый последующий replay промахивался по
+    этому ключу вечно (замерено: S2 троттлил на 3 вопросах из 4). Записанное
+    падение воспроизводится падением, а не пустотой: пустота — другой факт."""
+    path = tmp_path / "f.json"
+    rec = DiscoveryCache(path, mode=MODE_RECORD)
+    with pytest.raises(RuntimeError):
+        wrap([_BrokenSource()], rec)[0].discover("q", 5)
+    rec.save()
+
+    rep = DiscoveryCache(path, mode=MODE_REPLAY)
+    with pytest.raises(SourceUnavailable):
+        wrap([_BrokenSource()], rep)[0].discover("q", 5)
+    assert rep.misses == [], "записанное падение — не промах кэша"
+
+
+def test_recording_reports_which_sources_were_down(tmp_path):
+    rec = DiscoveryCache(tmp_path / "f.json", mode=MODE_RECORD)
+    for q in ("q1", "q2"):
+        with pytest.raises(RuntimeError):
+            wrap([_BrokenSource()], rec)[0].discover(q, 5)
+    wrap([_FakeSource()], rec)[0].discover("q1", 5)
+
+    assert rec.failures() == {"broken": 2}
