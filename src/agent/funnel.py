@@ -62,7 +62,7 @@ from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
 from ..sources.pdf import fetch_pdf_sections
-from ..store.qdrant_store import Chunk, QdrantStore
+from ..store.qdrant_store import Chunk, QdrantStore, chunk_id_for
 from .progress import ProgressCallback, emit as _emit
 from .state import Candidate, Finding, ResearchState, SubQuestion
 
@@ -152,6 +152,17 @@ def _discover(
     return candidates
 
 
+def _now() -> datetime:
+    """Текущее время отдельной функцией, чтобы его можно было заморозить.
+
+    Скор триажа зависит от «сейчас» (буст по свежести ниже), то есть один и
+    тот же прогон в разные дни ранжирует кандидатов по-разному. Для
+    воспроизводимого замера время — такой же внешний вход, как сеть, и
+    подменяться должно так же (см. evals/fixtures.py).
+    """
+    return datetime.now(timezone.utc)
+
+
 def _recency_boost(published_date: str | None) -> float:
     """Экспоненциально затухающий буст по свежести — 0, если дата неизвестна
     (не arXiv-источник) или не парсится. См. docstring модуля/config.py."""
@@ -161,7 +172,7 @@ def _recency_boost(published_date: str | None) -> float:
         published = datetime.fromisoformat(published_date.replace("Z", "+00:00"))
     except ValueError:
         return 0.0
-    age_days = (datetime.now(timezone.utc) - published).total_seconds() / 86400
+    age_days = (_now() - published).total_seconds() / 86400
     age_days = max(age_days, 0.0)
     return config.RECENCY_BOOST_SCALE * math.exp(-age_days / config.RECENCY_HALF_LIFE_DAYS)
 
@@ -298,7 +309,7 @@ def deep_read_candidate(
             citation_count = candidate.meta.get("citation_count")
             chunks = [
                 Chunk(
-                    id=str(uuid.uuid4()),
+                    id=chunk_id_for(candidate.id, raw.section, raw.text),
                     text=raw.text,
                     source_id=candidate.id,
                     source_title=candidate.title,

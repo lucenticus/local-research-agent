@@ -85,7 +85,7 @@ from ..sources.base import DiscoveredItem
 from ..sources.citations import PaperDetails, lookup_paper_details
 from ..sources.github import lookup_stars
 from ..sources.pdf import fetch_pdf
-from ..store.qdrant_store import Chunk, QdrantStore
+from ..store.qdrant_store import Chunk, QdrantStore, chunk_id_for
 from .progress import ProgressCallback, emit as _emit
 
 
@@ -451,7 +451,7 @@ def _pool_chunks(items: list[DiscoveredItem]) -> list[Chunk]:
     dense, sparse = embed.embed_texts_hybrid(texts)
     return [
         Chunk(
-            id=str(uuid.uuid4()),
+            id=chunk_id_for(item.id, "abstract", text),
             text=text,
             source_id=item.id,
             source_title=item.title,

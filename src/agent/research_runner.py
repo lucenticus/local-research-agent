@@ -23,7 +23,7 @@ from ..sources.wikipedia import WikipediaSource
 from ..store.qdrant_store import QdrantStore, document_to_hit
 from . import funnel, loop
 from .progress import ProgressCallback
-from .state import ResearchState
+from .state import Budget, ResearchState
 from .synthesize import synthesize
 
 
@@ -224,8 +224,15 @@ def run_research(
     question: str,
     store: QdrantStore,
     on_progress: ProgressCallback | None = None,
+    sources: list[Source] | None = None,
+    budget: Budget | None = None,
 ) -> ResearchResult:
-    state = loop.run(question, default_sources(), store, on_progress=on_progress)
+    """`sources`/`budget` — точки внедрения для воспроизводимого замера
+    (evals/): подставить обёрнутые фикстурами источники и снять лимит по
+    времени, из-за которого результат зависит от загрузки машины. В обычном
+    вызове оба None — поведение прежнее."""
+    state = loop.run(question, sources or default_sources(), store,
+                     budget=budget, on_progress=on_progress)
     hits = _retrieve_context(store, question, state)
     answer = synthesize(question, hits, gaps=state.gaps)
     state.add_turn(question, answer)

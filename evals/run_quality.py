@@ -42,8 +42,10 @@ from src import config
 from src.agent.evaluate import evaluate
 from src.agent.research_runner import run_research
 from src.providers import metrics, rerank
+from src.sources.replay import MODE_OFF, MODE_RECORD, MODE_REPLAY, DiscoveryCache
 from src.store.qdrant_store import QdrantStore
 
+from .fixtures import eval_budget, frozen_world, sources_for
 from .run_discovery import load_questions
 
 _RUNS_DIR = Path(__file__).parent / "runs"
@@ -63,7 +65,7 @@ def subtopic_coverage(answer: str, subtopics: list[str]) -> tuple[float, list[st
     return (len(subtopics) - len(missed)) / len(subtopics), missed
 
 
-def evaluate_case(case: dict[str, Any]) -> dict[str, Any]:
+def evaluate_case(case: dict[str, Any], cache: DiscoveryCache | None = None) -> dict[str, Any]:
     metrics.reset()
     # Своя коллекция, вычищенная перед КАЖДЫМ вопросом. Иначе замер врёт:
     # research-коллекция накопительная, второй прогон переиспользует
@@ -73,10 +75,13 @@ def evaluate_case(case: dict[str, Any]) -> dict[str, Any]:
     store = QdrantStore(collection_name=config.QDRANT_EVAL_COLLECTION)
     store.rebuild([])  # удаляет коллекцию целиком
 
+    cache = cache or DiscoveryCache("/dev/null", mode=MODE_OFF)
     started = time.perf_counter()
     error = None
     try:
-        result = run_research(case["question"], store)
+        with frozen_world(cache):
+            result = run_research(case["question"], store,
+                                  sources=sources_for(cache), budget=eval_budget())
     except Exception as exc:  # прогон не должен падать целиком из-за одного вопроса
         # Ключи метрик присутствуют со значением None: строка с ошибкой должна
         # быть той же формы, что и обычная, иначе на ней падает любой
@@ -182,10 +187,17 @@ def main() -> None:
     p.add_argument("--tag", default=None, help="только вопросы с этим тегом")
     p.add_argument("--limit", type=int, default=None, help="взять первые N вопросов (прогон дорогой)")
     p.add_argument("--baseline", metavar="FILE", default=None, help="прошлый прогон для диффа")
+    p.add_argument("--record", metavar="FILE", default=None, help="записать фикстуры внешних входов")
+    p.add_argument("--replay", metavar="FILE", default=None, help="прогон по записанным фикстурам")
     args = p.parse_args()
+    if args.record and args.replay:
+        p.error("--record и --replay взаимоисключающие")
+
+    mode = MODE_RECORD if args.record else MODE_REPLAY if args.replay else MODE_OFF
+    cache = DiscoveryCache(args.record or args.replay or "/dev/null", mode=mode)
 
     cases = load_questions(args.tag)[: args.limit]
-    print(f"Вопросов: {len(cases)}  ·  полный research() на каждом, это минуты")
+    print(f"Вопросов: {len(cases)}  ·  режим фикстур: {mode}  ·  полный research() на каждом")
 
     _RUNS_DIR.mkdir(parents=True, exist_ok=True)
     out = _RUNS_DIR / f"quality-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
@@ -193,7 +205,7 @@ def main() -> None:
 
     for i, case in enumerate(cases, start=1):
         print(f"\n[{i}/{len(cases)}] {case['id']} — {case['question'][:60]}", flush=True)
-        row = evaluate_case(case)
+        row = evaluate_case(case, cache)
         rows.append(row)
         if row.get("error"):
             print(f"    ОШИБКА: {row['error']}", flush=True)
@@ -209,6 +221,11 @@ def main() -> None:
     baseline = None
     if args.baseline:
         baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))["aggregate"]
+    if mode == MODE_RECORD:
+        cache.save()
+        print(f"\nФикстур записано: {len(cache)} → {cache.path}")
+    if cache.misses:
+        print(f"⚠ промахов кэша: {len(cache.misses)} — эти источники считались пустыми")
     print_report(aggregate(rows), baseline)
     print(f"\nПрогон сохранён: {out}")
 

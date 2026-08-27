@@ -25,13 +25,17 @@ from typing import Any
 
 from .base import DiscoveredItem, Source
 
+# Сентинел «записи нет»: отличается от записанного None (например,
+# цитируемость честно неизвестна) — это разные факты.
+_MISS = object()
+
 MODE_OFF = "off"
 MODE_RECORD = "record"
 MODE_REPLAY = "replay"
 
 
 def _key(source_name: str, query: str, limit: int) -> str:
-    return f"{source_name}|{limit}|{query}"
+    return f"discover|{source_name}|{limit}|{query}"
 
 
 class DiscoveryCache:
@@ -50,6 +54,19 @@ class DiscoveryCache:
             # дописываем к существующим, а не затираем: записать набор можно
             # в несколько заходов (источники троттлят по-разному)
             self._entries = json.loads(self.path.read_text(encoding="utf-8"))
+
+    def get_call(self, namespace: str, key: str) -> Any:
+        """Значение произвольного замороженного вызова (`_MISS` — записи нет).
+
+        Заморозить один только discovery недостаточно: прогон ходит в сеть
+        ещё за полным текстом PDF и за цитируемостью в OpenAlex, и второе
+        влияет на скор триажа, то есть на то, какие кандидаты вообще
+        выживут. Пока эти вызовы живые, повторный прогон видит другой вход.
+        """
+        return self._entries.get(f"{namespace}|{key}", _MISS)
+
+    def put_call(self, namespace: str, key: str, value: Any) -> None:
+        self._entries[f"{namespace}|{key}"] = value
 
     def get(self, source_name: str, query: str, limit: int) -> list[DiscoveredItem] | None:
         raw = self._entries.get(_key(source_name, query, limit))

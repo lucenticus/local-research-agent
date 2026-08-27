@@ -13,7 +13,7 @@ from .ingest.chunk import chunk_sections
 from .ingest.extract import Section, extract_html_sections, extract_pdf_sections, extract_sections
 from .providers import embed, tracing
 from .providers.mcp_client import content_to_text, get_mcp_tools
-from .store.qdrant_store import Chunk, QdrantStore
+from .store.qdrant_store import Chunk, QdrantStore, chunk_id_for
 
 _SECTION_EXTRACTORS = {
     ".txt": lambda path: extract_sections(path.read_text(encoding="utf-8")),
@@ -84,7 +84,7 @@ def _chunks_from_sections(sections: list[Section], source_id: str, source_title:
     vectors, sparse_vectors = embed.embed_texts_hybrid([c.text for c in raw_chunks])
     return [
         Chunk(
-            id=str(uuid.uuid4()), text=raw.text, source_id=source_id,
+            id=chunk_id_for(source_id, raw.section, raw.text), text=raw.text, source_id=source_id,
             source_title=source_title, section=raw.section, vector=vector, sparse=sparse,
         )
         for raw, vector, sparse in zip(raw_chunks, vectors, sparse_vectors, strict=True)

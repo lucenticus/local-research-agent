@@ -135,7 +135,7 @@ def test_each_case_starts_from_a_clean_index(monkeypatch):
 
     monkeypatch.setattr(run_quality, "QdrantStore", _Store)
     monkeypatch.setattr(run_quality, "run_research",
-                        lambda q, store: (_ for _ in ()).throw(RuntimeError("stop here")))
+                        lambda q, store, **kw: (_ for _ in ()).throw(RuntimeError("stop here")))
 
     run_quality.evaluate_case({"id": "x", "question": "вопрос"})
     assert ("init", run_quality.config.QDRANT_EVAL_COLLECTION) in calls
@@ -148,10 +148,115 @@ def test_error_row_has_the_same_shape_as_a_successful_one(monkeypatch):
     monkeypatch.setattr(run_quality, "QdrantStore", lambda collection_name=None: type(
         "S", (), {"rebuild": lambda self, chunks: None})())
     monkeypatch.setattr(run_quality, "run_research",
-                        lambda q, store: (_ for _ in ()).throw(RuntimeError("boom")))
+                        lambda q, store, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
 
     row = run_quality.evaluate_case({"id": "x", "question": "вопрос", "expected_gaps": False})
     for key in ("id", "question", "citation_coverage", "faithfulness", "subtopic_coverage",
                 "gap_honest", "wall_seconds", "providers"):
         assert key in row, key
     assert row["error"].startswith("RuntimeError")
+
+
+# --- фикстуры внешних входов ---
+
+def _cache(tmp_path, mode):
+    from src.sources.replay import DiscoveryCache
+    return DiscoveryCache(tmp_path / "fx.json", mode=mode)
+
+
+def test_frozen_world_is_a_noop_when_disabled(tmp_path):
+    from src.agent import funnel
+    from src.sources.replay import MODE_OFF
+    from evals.fixtures import frozen_world
+
+    before = (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now)
+    with frozen_world(_cache(tmp_path, MODE_OFF)):
+        assert (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now) == before
+
+
+def test_frozen_world_restores_the_originals_even_on_error(tmp_path):
+    from src.agent import funnel
+    from src.sources.replay import MODE_RECORD
+    from evals.fixtures import frozen_world
+
+    before = (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now)
+    try:
+        with frozen_world(_cache(tmp_path, MODE_RECORD)):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert (funnel.fetch_pdf_sections, funnel.lookup_citation_count, funnel._now) == before
+
+
+def test_pdf_and_citations_are_recorded_then_replayed(tmp_path, monkeypatch):
+    from src.agent import funnel
+    from src.ingest.extract import Section
+    from src.sources.replay import MODE_RECORD, MODE_REPLAY
+    from evals.fixtures import frozen_world
+
+    calls = []
+    monkeypatch.setattr(funnel, "fetch_pdf_sections",
+                        lambda url: (calls.append(url), [Section(name="R", category="results", text="t")])[1])
+    monkeypatch.setattr(funnel, "lookup_citation_count", lambda title: (calls.append(title), 42)[1])
+
+    rec = _cache(tmp_path, MODE_RECORD)
+    with frozen_world(rec):
+        funnel.fetch_pdf_sections("http://x/p.pdf")
+        funnel.lookup_citation_count("Some Paper")
+    rec.save()
+    assert len(calls) == 2
+
+    rep = _cache(tmp_path, MODE_REPLAY)
+    with frozen_world(rep):
+        sections = funnel.fetch_pdf_sections("http://x/p.pdf")
+        count = funnel.lookup_citation_count("Some Paper")
+    assert len(calls) == 2, "при replay настоящие функции звать нельзя"
+    assert [s.text for s in sections] == ["t"]
+    assert count == 42
+
+
+def test_unknown_citation_is_replayed_as_none_not_as_a_lookup(tmp_path, monkeypatch):
+    """`None` от OpenAlex — записываемый факт «не нашли», а не промах кэша:
+    иначе при replay мы бы снова полезли в сеть именно там, где её нет."""
+    from src.agent import funnel
+    from src.sources.replay import MODE_RECORD, MODE_REPLAY
+    from evals.fixtures import frozen_world
+
+    monkeypatch.setattr(funnel, "lookup_citation_count", lambda title: None)
+    rec = _cache(tmp_path, MODE_RECORD)
+    with frozen_world(rec):
+        funnel.lookup_citation_count("Fresh Preprint")
+    rec.save()
+
+    def _fail(title):
+        raise AssertionError("при replay сеть трогать нельзя")
+
+    monkeypatch.setattr(funnel, "lookup_citation_count", _fail)
+    rep = _cache(tmp_path, MODE_REPLAY)
+    with frozen_world(rep):
+        assert funnel.lookup_citation_count("Fresh Preprint") is None
+
+
+def test_time_is_frozen_to_the_recorded_moment(tmp_path):
+    from src.agent import funnel
+    from src.sources.replay import MODE_RECORD, MODE_REPLAY
+    from evals.fixtures import frozen_world
+
+    rec = _cache(tmp_path, MODE_RECORD)
+    with frozen_world(rec):
+        recorded = funnel._now()
+    rec.save()
+
+    rep = _cache(tmp_path, MODE_REPLAY)
+    with frozen_world(rep):
+        assert funnel._now() == recorded, "свежесть считается от «сейчас» — момент должен совпадать"
+
+
+def test_eval_budget_drops_the_wall_clock_limit_but_keeps_the_others():
+    """Лимит по секундам делает результат зависимым от загрузки машины;
+    остальные лимиты остаются, иначе цикл может не завершиться."""
+    from evals.fixtures import eval_budget
+
+    b = eval_budget()
+    assert b.max_seconds is None
+    assert b.max_iterations > 0 and b.max_deep_reads > 0
