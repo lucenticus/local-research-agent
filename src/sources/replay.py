@@ -43,9 +43,22 @@ class DiscoveryCache:
     падают: добавить новый вопрос в golden-набор не должно ломать прогон, но
     и молча меряться на пустоте тоже нельзя — счётчик печатает раннер."""
 
-    def __init__(self, path: Path | str, mode: str = MODE_OFF):
+    def __init__(self, path: Path | str, mode: str = MODE_OFF, top_up: bool = False):
+        """`top_up` — в replay доснимать то, чего в записи нет.
+
+        Фикстура замораживает ПУТЬ, пройденный при записи, а не всё дерево
+        возможных путей: стоит триажу выбрать другую статью или gap-check
+        запросить лишнюю итерацию с новым подвопросом — и прогон выходит за
+        пределы записанного. Без дозаписи такой шаг молча превращается в
+        пустую выдачу (замерено: один разошедшийся подвопрос дал 0.0 покрытия
+        подтем там, где запись давала 0.667).
+
+        Дозапись гоняется до тех пор, пока промахи не станут нулём; после
+        этого фикстура покрывает и окрестности пути, а не только его сам.
+        """
         self.path = Path(path)
         self.mode = mode
+        self.top_up = top_up
         self.misses: list[str] = []
         self._entries: dict[str, list[dict[str, Any]]] = {}
         if self.mode == MODE_REPLAY and self.path.exists():
@@ -75,6 +88,11 @@ class DiscoveryCache:
 
     def put_call(self, namespace: str, key: str, value: Any) -> None:
         self._entries[f"{namespace}|{key}"] = value
+
+    @property
+    def writable(self) -> bool:
+        """Записывать ли живые ответы: при записи и при дозаписи."""
+        return self.mode == MODE_RECORD or (self.mode == MODE_REPLAY and self.top_up)
 
     def get(self, source_name: str, query: str, limit: int) -> list[DiscoveredItem] | None:
         raw = self._entries.get(_key(source_name, query, limit))
@@ -116,9 +134,13 @@ class CachedSource:
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
         if self._cache.mode == MODE_REPLAY:
-            return self._cache.get(self.name, query, limit) or []
+            cached = self._cache.get(self.name, query, limit)
+            if cached is not None:
+                return cached
+            if not self._cache.top_up:
+                return []
         items = self._inner.discover(query, limit)
-        if self._cache.mode == MODE_RECORD:
+        if self._cache.writable:
             self._cache.put(self.name, query, limit, items)
         return items
 

@@ -194,12 +194,17 @@ def main() -> None:
     p.add_argument("--baseline", metavar="FILE", default=None, help="прошлый прогон для диффа")
     p.add_argument("--record", metavar="FILE", default=None, help="записать фикстуры внешних входов")
     p.add_argument("--replay", metavar="FILE", default=None, help="прогон по записанным фикстурам")
+    p.add_argument("--top-up", action="store_true",
+                   help="в replay доснять то, чего в фикстурах нет (гонять до нуля промахов)")
     args = p.parse_args()
     if args.record and args.replay:
         p.error("--record и --replay взаимоисключающие")
+    if args.top_up and not args.replay:
+        p.error("--top-up имеет смысл только с --replay")
 
     mode = MODE_RECORD if args.record else MODE_REPLAY if args.replay else MODE_OFF
-    cache = DiscoveryCache(args.record or args.replay or "/dev/null", mode=mode)
+    cache = DiscoveryCache(args.record or args.replay or "/dev/null", mode=mode, top_up=args.top_up)
+    before = len(cache)
 
     cases = load_questions(args.tag)[: args.limit]
     print(f"Вопросов: {len(cases)}  ·  режим фикстур: {mode}  ·  полный research() на каждом")
@@ -226,6 +231,12 @@ def main() -> None:
     baseline = None
     if args.baseline:
         baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))["aggregate"]
+    if cache.top_up:
+        cache.save()
+        added = len(cache) - before
+        print(f"\nДоснято фикстур: {added} (было {before}, стало {len(cache)}) → {cache.path}")
+        if added:
+            print("  прогон ещё не герметичен — повторить --top-up до нуля промахов")
     if mode == MODE_RECORD:
         cache.save()
         print(f"\nФикстур записано: {len(cache)} → {cache.path}")
@@ -238,8 +249,12 @@ def main() -> None:
         counts = cache.miss_counts()
         print(f"\n⚠ промахов фикстур: {len(cache.misses)}")
         for ns, n in sorted(counts.items()):
-            effect = ("источник считался пустым" if ns == "discover"
-                      else "вызов ушёл в ЖИВУЮ сеть — прогон не герметичен")
+            if cache.top_up:
+                effect = "доснято живым вызовом"
+            elif ns == "discover":
+                effect = "источник считался пустым"
+            else:
+                effect = "вызов ушёл в ЖИВУЮ сеть — прогон не герметичен"
             print(f"    {ns:<12} {n:>4}  — {effect}")
     print_report(aggregate(rows), baseline)
     print(f"\nПрогон сохранён: {out}")

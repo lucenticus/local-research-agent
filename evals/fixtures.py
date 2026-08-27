@@ -107,7 +107,7 @@ def frozen_world(cache: DiscoveryCache):
         if cached is not replay._MISS:
             return [Section(**s) for s in cached]
         sections = real_pdf(url)
-        if cache.mode == MODE_RECORD:
+        if cache.writable:
             cache.put_call("pdf", url, [asdict(s) for s in sections])
         return sections
 
@@ -123,7 +123,7 @@ def frozen_world(cache: DiscoveryCache):
         # знает»), в отличие от недоступности API: та поднимает
         # SourceUnavailable и до записи не доходит вовсе.
         counts = real_citations(arxiv_ids)
-        if cache.mode == MODE_RECORD:
+        if cache.writable:
             cache.put_call("citations", key, counts)
         return counts
 

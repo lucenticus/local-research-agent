@@ -124,3 +124,33 @@ def test_recording_does_not_count_misses(tmp_path):
     cache = DiscoveryCache(tmp_path / "f.json", mode=MODE_RECORD)
     cache.get_call("pdf", "http://example.org/a.pdf")
     assert cache.misses == []
+
+
+def test_top_up_fills_a_miss_from_the_live_source(tmp_path):
+    """Фикстура замораживает пройденный при записи путь. Стоит триажу выбрать
+    другую статью или gap-check запросить лишнюю итерацию — и прогон выходит
+    за её пределы; без дозаписи это молча превращается в пустую выдачу."""
+    path = tmp_path / "f.json"
+    rec = DiscoveryCache(path, mode=MODE_RECORD)
+    wrap([_FakeSource()], rec)[0].discover("recorded", 5)
+    rec.save()
+
+    top = DiscoveryCache(path, mode=MODE_REPLAY, top_up=True)
+    assert len(wrap([_FakeSource()], top)[0].discover("brand new", 5)) == 1
+    top.save()
+
+    done = DiscoveryCache(path, mode=MODE_REPLAY)
+    source = wrap([_FakeSource(items=[])], done)[0]
+    assert len(source.discover("brand new", 5)) == 1, "доснятое должно воспроизводиться"
+    assert done.misses == []
+
+
+def test_replay_without_top_up_does_not_touch_the_source(tmp_path):
+    def _fail(*args, **kw):
+        raise AssertionError("в replay без дозаписи источник звать нельзя")
+
+    cache = DiscoveryCache(tmp_path / "f.json", mode=MODE_REPLAY)
+    source = wrap([_FakeSource()], cache)[0]
+    source._inner.discover = _fail
+    assert source.discover("unknown", 5) == []
+    assert cache.misses == ["discover|fake|5|unknown"]
