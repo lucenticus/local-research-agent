@@ -391,3 +391,76 @@ def test_fetch_does_not_retry_on_404(monkeypatch):
     with pytest.raises(urllib.error.HTTPError):
         ArxivSource(categories=["cs.AI"]).recent(days=7, limit=10)
     assert len(attempts) == 1
+
+
+def test_keywords_drops_stopwords_punctuation_and_duplicates():
+    """Живой дефект: вопрос уходил в arXiv дословно, каждое слово через AND —
+    включая "What", "for", "in" и приклеенный "?". Реальная проверка дала
+    0 результатов против 630 у запроса из одних ключевых слов."""
+    terms = arxiv_module._keywords("What approaches exist for KV-cache compression in transformers?")
+    assert terms == ["KV-cache", "compression", "transformers"]
+
+
+def test_keywords_preserves_order_and_case_of_content_words():
+    assert arxiv_module._keywords("How does routing work in Mixture-of-Experts models?") == [
+        "routing", "Mixture-of-Experts", "models",
+    ]
+
+
+def test_keyword_query_caps_the_number_of_terms():
+    query = "alpha beta gamma delta epsilon zeta eta theta"
+    assert arxiv_module._keyword_query(query).count(" AND ") == arxiv_module._MAX_QUERY_TERMS - 1
+    assert arxiv_module._keyword_query(query, 2) == "all:alpha AND all:beta"
+
+
+def test_keyword_query_falls_back_when_everything_is_a_stopword():
+    """Иначе запрос из одних стоп-слов превратился бы в пустой AND."""
+    assert arxiv_module._keyword_query("what is the") == "all:what is the"
+
+
+def test_discover_retries_with_a_shorter_query_when_the_first_one_is_empty(monkeypatch):
+    """Каждый лишний терм в AND сужает выдачу arXiv до нуля — на пустом
+    ответе пробуем ещё раз более широким запросом, а не отдаём воронке
+    незакрытый подвопрос."""
+    sent = []
+    empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+
+    def fake_urlopen(request, timeout=None):
+        sent.append(request.full_url)
+        return _FakeResponse(empty if len(sent) == 1 else _ATOM_TEMPLATE)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    items = ArxivSource().discover("alpha beta gamma delta epsilon zeta", limit=5)
+    assert len(sent) == 2
+    assert sent[0].count("all%3A") == arxiv_module._MAX_QUERY_TERMS
+    assert sent[1].count("all%3A") == arxiv_module._RETRY_QUERY_TERMS
+    assert len(items) == 1  # результат пришёл со второй попытки
+
+
+def test_discover_does_not_retry_when_the_first_query_found_something(monkeypatch):
+    sent = []
+
+    def fake_urlopen(request, timeout=None):
+        sent.append(request.full_url)
+        return _FakeResponse(_ATOM_TEMPLATE)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ArxivSource().discover("alpha beta gamma delta epsilon zeta", limit=5)
+    assert len(sent) == 1
+
+
+def test_discover_does_not_retry_a_query_that_is_already_short(monkeypatch):
+    """Ужимать нечего — второй запрос был бы точной копией первого."""
+    sent = []
+    empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+
+    def fake_urlopen(request, timeout=None):
+        sent.append(request.full_url)
+        return _FakeResponse(empty)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert ArxivSource().discover("alpha beta", limit=5) == []
+    assert len(sent) == 1

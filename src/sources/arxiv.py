@@ -101,7 +101,21 @@ class ArxivSource:
         self._categories = categories
 
     def discover(self, query: str, limit: int) -> list[DiscoveredItem]:
-        keyword_query = _keyword_query(query)
+        """Поиск по релевантности с откатом на более широкий запрос.
+
+        Пустая выдача у arXiv — обычное дело для длинного вопроса: термы
+        соединены через AND, и каждый лишний сужает результат до нуля. Вместо
+        того чтобы отдать воронке пустоту (она это переживёт, но подвопрос
+        останется незакрытым), пробуем ещё раз, ужав запрос до
+        `_RETRY_QUERY_TERMS` самых первых термов.
+        """
+        items = self._query_keywords(query, limit, _MAX_QUERY_TERMS)
+        if items or len(_keywords(query)) <= _RETRY_QUERY_TERMS:
+            return items
+        return self._query_keywords(query, limit, _RETRY_QUERY_TERMS)
+
+    def _query_keywords(self, query: str, limit: int, max_terms: int) -> list[DiscoveredItem]:
+        keyword_query = _keyword_query(query, max_terms)
         category_clause = self._category_clause()
         search_query = f"({category_clause}) AND ({keyword_query})" if category_clause else keyword_query
         return self._query(search_query, limit=limit, sort_by="relevance")
@@ -222,11 +236,58 @@ class ArxivSource:
             )
 
 
-def _keyword_query(query: str) -> str:
-    # AND по словам, не точная фраза — вопросы на естественном языке почти
+# Стоп-слова: вопросительные, служебные, связки. Отбрасываются перед сборкой
+# AND-запроса — см. `_keywords`. Список намеренно короткий и консервативный:
+# лучше оставить лишний терм (запрос сузится, но останется осмысленным), чем
+# выбросить содержательное слово.
+_STOPWORDS = frozenset("""
+a an the and or of for in on to with without from by as at is are was were be been
+what which who whom when where why how does do did doing done can could should would
+will shall may might must have has had it its this that these those there here
+i we you they he she them us our your their my me
+about into over under between across through during than then so such
+approach approaches method methods way ways work works use used using
+exist exists need needs make makes based given
+""".split())
+
+# Сколько термов оставлять в первом, точном запросе. Больше — точнее, но выше
+# шанс пустой выдачи; на этот случай есть откат ниже.
+_MAX_QUERY_TERMS = 6
+# На сколько термов ужимать запрос, если точный не нашёл ничего.
+_RETRY_QUERY_TERMS = 3
+
+
+def _keywords(query: str) -> list[str]:
+    """Вопрос на естественном языке -> содержательные термы, по порядку.
+
+    Без этого шага запрос вида "What approaches exist for KV-cache compression
+    in transformers?" превращался в AND из восьми термов, включая "What",
+    "for", "in" и приклеенный к последнему слову "?" — и arXiv честно
+    возвращал НОЛЬ результатов (проверено живым запросом: 0 против 630 у
+    "KV-cache AND compression"). Английские вопросы попадали в эту ветку
+    напрямую, а русские спасал LLM-перевод в funnel.py, который и так отдаёт
+    короткие ключевые слова.
+    """
+    words = (w.strip("?!.,:;()[]{}\"'\u00ab\u00bb") for w in query.split())
+    seen: set[str] = set()
+    terms: list[str] = []
+    for word in words:
+        low = word.lower()
+        if not word or low in _STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        terms.append(word)
+    return terms
+
+
+def _keyword_query(query: str, max_terms: int = _MAX_QUERY_TERMS) -> str:
+    # AND по термам, не точная фраза — вопросы на естественном языке почти
     # никогда не совпадают с заголовком/абстрактом статьи дословно.
-    words = query.split()
-    return " AND ".join(f"all:{w}" for w in words) if words else f"all:{query}"
+    terms = _keywords(query)[:max_terms]
+    if not terms:
+        # Запрос целиком из стоп-слов — отдаём как есть, пусть решает arXiv.
+        return f"all:{query}" if query.strip() else "all:"
+    return " AND ".join(f"all:{t}" for t in terms)
 
 
 def _published_after(item: DiscoveredItem, cutoff: datetime) -> bool:
