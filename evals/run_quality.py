@@ -225,7 +225,12 @@ def main() -> None:
         cache.save()
         print(f"\nФикстур записано: {len(cache)} → {cache.path}")
     if cache.misses:
-        print(f"⚠ промахов кэша: {len(cache.misses)} — эти источники считались пустыми")
+        counts = cache.miss_counts()
+        print(f"\n⚠ промахов фикстур: {len(cache.misses)}")
+        for ns, n in sorted(counts.items()):
+            effect = ("источник считался пустым" if ns == "discover"
+                      else "вызов ушёл в ЖИВУЮ сеть — прогон не герметичен")
+            print(f"    {ns:<12} {n:>4}  — {effect}")
     print_report(aggregate(rows), baseline)
     print(f"\nПрогон сохранён: {out}")
 

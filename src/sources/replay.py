@@ -62,8 +62,16 @@ class DiscoveryCache:
         ещё за полным текстом PDF и за цитируемостью в OpenAlex, и второе
         влияет на скор триажа, то есть на то, какие кандидаты вообще
         выживут. Пока эти вызовы живые, повторный прогон видит другой вход.
+
+        Промах в replay считается: вызывающий уходит в живую сеть, то есть
+        прогон в этом месте перестаёт быть герметичным, и знать об этом надо.
+        Молчать нельзя — частично записанные фикстуры выглядят точно так же,
+        как полные, и тихо меряют сегодняшний интернет вместо записанного.
         """
-        return self._entries.get(f"{namespace}|{key}", _MISS)
+        value = self._entries.get(f"{namespace}|{key}", _MISS)
+        if value is _MISS and self.mode == MODE_REPLAY:
+            self.misses.append(f"{namespace}|{key}")
+        return value
 
     def put_call(self, namespace: str, key: str, value: Any) -> None:
         self._entries[f"{namespace}|{key}"] = value
@@ -77,6 +85,15 @@ class DiscoveryCache:
 
     def put(self, source_name: str, query: str, limit: int, items: list[DiscoveredItem]) -> None:
         self._entries[_key(source_name, query, limit)] = [asdict(i) for i in items]
+
+    def miss_counts(self) -> dict[str, int]:
+        """Промахи по типу вызова: discovery считается пустым источником, а
+        pdf/citations уходят в сеть — это разные последствия, и в отчёте они
+        должны стоять раздельно."""
+        counts: dict[str, int] = {}
+        for key in self.misses:
+            counts[key.split("|", 1)[0]] = counts.get(key.split("|", 1)[0], 0) + 1
+        return counts
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

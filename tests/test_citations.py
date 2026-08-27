@@ -6,7 +6,10 @@ import io
 import json
 import urllib.error
 
+import pytest
+
 from src.sources import citations
+from src.sources._common import SourceUnavailable
 
 
 class _FakeResponse:
@@ -42,12 +45,26 @@ def test_lookup_returns_none_on_empty_title():
     assert citations.lookup_citation_count("   ") is None
 
 
-def test_lookup_returns_none_on_network_error(monkeypatch):
+def test_lookup_raises_when_openalex_unreachable(monkeypatch):
+    """Недоступность — не «цитируемости нет». Раньше оба случая возвращали
+    None, и записанный в фикстуры None читался как факт «статья без
+    цитирований», хотя это был 429."""
     def _raise(request, timeout=None):
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr("urllib.request.urlopen", _raise)
-    assert citations.lookup_citation_count("some title") is None
+    with pytest.raises(SourceUnavailable):
+        citations.lookup_citation_count("some title")
+
+
+def test_paper_details_still_degrades_to_none(monkeypatch):
+    """Витрина дайджеста показывает пустоту в обоих случаях — там различие
+    не нужно и наружу не выносится."""
+    def _raise(request, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", _raise)
+    assert citations.lookup_paper_details("some title") is None
 
 
 def test_lookup_returns_none_when_count_field_missing(monkeypatch):

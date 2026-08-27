@@ -22,6 +22,19 @@ _TIMEOUT_SECONDS = 15
 _FETCH_ERRORS = (OSError, ValueError)
 
 
+class SourceUnavailable(Exception):
+    """Источник не ответил: сеть, таймаут, 429, битый JSON.
+
+    Отличается от «источник ответил, но ничего не нашёл» — это разные факты, и
+    склеивать их в один `None` можно ровно до тех пор, пока результат никуда не
+    записывается. Как только ответ попадает в фикстуры (`evals/fixtures.py`),
+    разница становится критической: записанный `None` читается потом как
+    «цитируемость честно неизвестна», хотя на деле мы упёрлись в лимит API.
+    Поймано вживую: OpenAlex перешёл на платный тираж и отдаёт 429
+    "Insufficient budget" до полуночи UTC — прогон при этом выглядел
+    совершенно здоровым."""
+
+
 def fetch_json(
     url: str,
     params: dict | None = None,
@@ -29,11 +42,16 @@ def fetch_json(
     json_body: dict | None = None,
     headers: dict | None = None,
     timeout: int = _TIMEOUT_SECONDS,
+    strict: bool = False,
 ) -> dict | None:
     """GET (или POST, если передан `json_body`) с urlencode(params) и парсингом
     JSON-ответа. `None` на любую сетевую ошибку/невалидный JSON — источник
     просто оказывается временно пуст, `funnel.py` и так переживает
-    недоступность любого отдельного источника."""
+    недоступность любого отдельного источника.
+
+    `strict=True` — вместо `None` поднять `SourceUnavailable`. Нужно тем
+    вызовам, чей результат может быть записан в фикстуры или иначе принят за
+    факт: там «не нашли» и «не смогли спросить» обязаны различаться."""
     full_url = f"{url}?{urllib.parse.urlencode(params)}" if params else url
     data = json.dumps(json_body).encode("utf-8") if json_body is not None else None
     request_headers = {"User-Agent": _USER_AGENT, **(headers or {})}
@@ -43,7 +61,9 @@ def fetch_json(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
-    except _FETCH_ERRORS:
+    except _FETCH_ERRORS as exc:
+        if strict:
+            raise SourceUnavailable(f"{url}: {exc}") from exc
         return None
 
 

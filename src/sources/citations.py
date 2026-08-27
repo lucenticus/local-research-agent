@@ -1,6 +1,14 @@
-"""Обогащение метаданными через OpenAlex — источник без ключа (проверено
-вручную 2026-08-06: `cited_by_count` через title-search; 2026-08-10:
+"""Обогащение метаданными через OpenAlex — без ключа (проверено вручную
+2026-08-06: `cited_by_count` через title-search; 2026-08-10:
 venue/авторы/институции/h-index тем же способом).
+
+ВНИМАНИЕ (проверено 2026-08-27): OpenAlex перешёл на тираж с деньгами и
+отдаёт 429 `{"error": "Rate limit exceeded", "message": "Insufficient
+budget ... Resets at midnight UTC"}` после исчерпания суточного бюджета.
+Ключа у нас нет, так что обогащение arXiv-кандидатов на исчерпанном бюджете
+не работает вовсе — до полуночи UTC. Поэтому `lookup_citation_count`
+поднимает `SourceUnavailable` вместо `None`: «не нашли статью» и «не смогли
+спросить» должны различаться (см. `_common.SourceUnavailable`).
 
 Semantic Scholar уже отдаёт `citationCount` прямо при discovery — обогащение
 нужно только источникам, которые своей цитируемости не знают (arXiv).
@@ -29,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-from ._common import fetch_json
+from ._common import SourceUnavailable, fetch_json
 
 _WORKS_URL = "https://api.openalex.org/works"
 _AUTHORS_URL = "https://api.openalex.org/authors"
@@ -45,7 +53,10 @@ def _find_work(title: str) -> dict | None:
     title = title.strip()
     if not title:
         return None
-    body = fetch_json(_WORKS_URL, {"filter": f"title.search:{title}", "per_page": 1}, timeout=_TIMEOUT_SECONDS)
+    body = fetch_json(
+        _WORKS_URL, {"filter": f"title.search:{title}", "per_page": 1},
+        timeout=_TIMEOUT_SECONDS, strict=True,
+    )
     if body is None:
         return None
     results = body.get("results") or []
@@ -62,6 +73,12 @@ def _find_work(title: str) -> dict | None:
 
 
 def lookup_citation_count(title: str) -> int | None:
+    """Цитируемость или `None`, если статьи в OpenAlex нет.
+
+    `SourceUnavailable`, если OpenAlex не ответил (лимит/сеть) — вызывающий
+    сам решает, деградировать или остановиться. Молча вернуть здесь `None`
+    нельзя: это тот же ответ, что и «статьи не существует», а решения на них
+    принимаются разные."""
     work = _find_work(title)
     if work is None:
         return None
@@ -110,8 +127,16 @@ def _lookup_h_indexes(author_ids: list[str]) -> dict[str, int]:
 def lookup_paper_details(title: str) -> PaperDetails | None:
     """Цитируемость + venue + авторы (институция, h-index) — `None`, если
     статья не найдена в OpenAlex (см. docstring модуля: обычное дело для
-    только что опубликованных препринтов, не повод гадать)."""
-    work = _find_work(title)
+    только что опубликованных препринтов, не повод гадать).
+
+    Недоступность OpenAlex здесь тоже `None`: это витрина (карточка статьи в
+    дайджесте), где показать нечего в обоих случаях, и городить различие
+    ради UI незачем — в отличие от `lookup_citation_count`, чей результат
+    идёт в скоринг и в фикстуры."""
+    try:
+        work = _find_work(title)
+    except SourceUnavailable:
+        return None
     if work is None:
         return None
 

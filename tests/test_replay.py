@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.sources.base import DiscoveredItem
+from src.sources import replay as replay_module
 from src.sources.replay import (
     MODE_OFF,
     MODE_RECORD,
@@ -103,3 +104,23 @@ def test_empty_result_is_recorded_as_empty_not_as_a_miss(tmp_path):
     replay = DiscoveryCache(path, mode=MODE_REPLAY)
     assert wrap([_FakeSource()], replay)[0].discover("q", 5) == []
     assert replay.misses == []
+
+
+def test_replay_miss_on_a_non_discovery_call_is_counted(tmp_path):
+    """Частично записанные фикстуры выглядят как полные. Промах по pdf или
+    citations означает, что вызов ушёл в живую сеть — прогон в этом месте
+    перестал быть герметичным, и это обязано попасть в отчёт."""
+    cache = DiscoveryCache(tmp_path / "f.json", mode=MODE_REPLAY)
+
+    assert cache.get_call("pdf", "http://example.org/a.pdf") is replay_module._MISS
+    assert cache.get_call("citations", "Some Title") is replay_module._MISS
+    assert cache.miss_counts() == {"pdf": 1, "citations": 1}
+
+
+def test_recording_does_not_count_misses(tmp_path):
+    """В record промах — это норма (мы как раз и записываем впервые), считать
+    его нечего: счётчик означает «прогон не герметичен», а запись герметичной
+    и не бывает."""
+    cache = DiscoveryCache(tmp_path / "f.json", mode=MODE_RECORD)
+    cache.get_call("pdf", "http://example.org/a.pdf")
+    assert cache.misses == []

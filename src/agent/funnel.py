@@ -58,6 +58,7 @@ from ..ingest.chunk import chunk_sections, chunk_text
 from ..ingest.extract import Section
 from ..providers import embed, llm
 from ..providers.mcp_client import content_to_text, get_single_tool
+from ..sources._common import SourceUnavailable
 from ..sources.base import DiscoveredItem, Source
 from ..sources.citations import lookup_citation_count
 from ..sources.langchain_tools import make_discover_tool
@@ -114,9 +115,15 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def _to_candidate(item: DiscoveredItem) -> Candidate:
     citation_count = item.citation_count
     if citation_count is None and item.source == "arxiv":
-        # arXiv не отдаёт цитируемость сам — обогащаем через OpenAlex
-        # (best effort: не найдено/недоступно -> остаётся None).
-        citation_count = lookup_citation_count(item.title)
+        # arXiv не отдаёт цитируемость сам — обогащаем через OpenAlex.
+        # Недоступность OpenAlex (лимит/сеть) деградирует до None здесь, а не
+        # внутри источника: буст по цитируемости — тайбрейкер, без него триаж
+        # работает, а вот записать это None в фикстуры как факт нельзя, и
+        # поэтому различие обязано существовать выше по стеку.
+        try:
+            citation_count = lookup_citation_count(item.title)
+        except SourceUnavailable:
+            citation_count = None
     return Candidate(
         id=_canonical_candidate_id(item),
         source=item.source,
