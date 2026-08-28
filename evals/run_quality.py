@@ -34,6 +34,7 @@ import argparse
 import json
 import statistics
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -88,12 +89,18 @@ def evaluate_case(case: dict[str, Any], cache: DiscoveryCache | None = None) -> 
             result = run_research(case["question"], store,
                                   sources=sources_for(cache), budget=eval_budget())
     except Exception as exc:  # прогон не должен падать целиком из-за одного вопроса
+        # Трейсбек — в строку результата. Одна строка "RemoteProtocolError:
+        # Server disconnected" не говорит, КТО отключился: Qdrant, источник
+        # или MCP. Поймано вживую: вопрос падал дважды подряд, и без кадра
+        # стека оставалось только гадать.
+        trace = traceback.format_exc()
         # Ключи метрик присутствуют со значением None: строка с ошибкой должна
         # быть той же формы, что и обычная, иначе на ней падает любой
         # потребитель — дифф, отчёт, внешний анализ (поймано на своём же
         # A/B-скрипте: KeyError вместо результата после часа работы).
         return {"id": case["id"], "question": case["question"],
                 "error": f"{type(exc).__name__}: {exc}",
+                "traceback": trace,
                 "wall_seconds": round(time.perf_counter() - started, 1),
                 "citation_coverage": None, "faithfulness": None, "unsupported": [],
                 "subtopic_coverage": None, "missed_subtopics": [],
@@ -184,7 +191,11 @@ def print_report(agg: dict[str, Any], baseline: dict[str, Any] | None) -> None:
         for name, m in sorted(agg["providers_total"].items()):
             print(f"{name:<24} {m['calls']:>9} {m['seconds']:>9.1f} {m['tokens']:>10}")
     if agg.get("n_error"):
-        print(f"\n⚠ вопросов с ошибкой: {agg['n_error']}")
+        # Агрегат считается по успешным вопросам, то есть прогон с ошибкой
+        # усредняет ДРУГОЙ набор. Сравнивать его с полным прогоном нельзя —
+        # разница будет разницей в составе вопросов, а не в конфигурации.
+        print(f"\n⚠ вопросов с ошибкой: {agg['n_error']} — агрегат СЧИТАН НЕ ПО ТОМУ ЖЕ НАБОРУ, "
+              f"сравнивать с полным прогоном нельзя")
 
 
 def main() -> None:
@@ -234,6 +245,7 @@ def main() -> None:
         rows.append(row)
         if row.get("error"):
             print(f"    ОШИБКА: {row['error']}", flush=True)
+            print("    " + (row.get("traceback") or "").strip().replace("\n", "\n    "), flush=True)
         else:
             print(f"    coverage={row['citation_coverage']} faithful={row['faithfulness']} "
                   f"подтемы={row['subtopic_coverage']} за {row['wall_seconds']}с", flush=True)
