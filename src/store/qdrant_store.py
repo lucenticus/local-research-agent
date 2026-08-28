@@ -29,16 +29,19 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
+import httpx
 from qdrant_client import QdrantClient, models
 
 from .. import config
 from ..providers import embed
 
+
+_T = TypeVar("_T")
 _DENSE_VECTOR_NAME = "dense"
 _SPARSE_VECTOR_NAME = "sparse"
 # Кандидатов на каждую сторону (dense/sparse) перед RRF-слиянием — шире, чем
@@ -183,6 +186,33 @@ class QdrantStore(VectorStore):
             self._client = QdrantClient(path=self._path) if self._path else QdrantClient(url=self._url)
         return self._client
 
+    def _retrying(self, call: Callable[[QdrantClient], _T]) -> _T:
+        """Выполнить обращение к Qdrant, один раз пересоздав клиента на
+        обрыве соединения.
+
+        Клиент держит пул keep-alive-соединений. Сервер закрывает простоявшее
+        соединение, а пул этого не знает и отдаёт его следующему запросу —
+        тот падает с `RemoteProtocolError: Server disconnected without
+        sending a response`, ничего в действительности не выполнив. Поймано
+        на замере: вопрос падал после того, как предыдущий считался 4.5
+        минуты, — соединение всё это время простаивало. Дважды подряд, всегда
+        после долгой паузы.
+
+        Повтор безопасен именно здесь: поиск идемпотентен по определению, а
+        upsert стал идемпотентным, когда id точек сделали производными от
+        содержимого (`chunk_id_for`) — повторная запись перезаписывает ту же
+        точку, а не заводит дубликат.
+
+        Ровно одна попытка. Второй обрыв подряд — это уже не устаревшее
+        соединение, а недоступный Qdrant, и притворяться, что это лечится
+        повтором, значит прятать настоящую поломку.
+        """
+        try:
+            return call(self._connect())
+        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError):
+            self._client = None
+            return call(self._connect())
+
     def _create_collection(self, dim: int) -> None:
         """`dim` — размерность dense-вектора, берётся из первого чанка,
         который реально индексируется (см. `rebuild`/`add_chunks`), а не из
@@ -245,16 +275,19 @@ class QdrantStore(VectorStore):
         dense-вектором, sparse и текстом дали 53МБ и 400 Bad Request
         (поймано реальным прогоном, не гипотетически).
         """
-        client = self._connect()
         for start in range(0, len(chunks), _UPSERT_BATCH):
             batch = chunks[start : start + _UPSERT_BATCH]
-            client.upsert(self._collection_name, points=[_point(c) for c in batch])
+            points = [_point(c) for c in batch]
+            # Повтор безопасен: id точки производен от содержимого
+            # (`chunk_id_for`), так что повторный upsert перезаписывает ту же
+            # точку, а не плодит дубликат.
+            self._retrying(lambda client: client.upsert(self._collection_name, points=points))
 
     def has_source(self, source_id: str) -> bool:
         """Есть ли уже чанки с этим source_id — кэш-хит для funnel (не читать повторно)."""
-        client = self._connect()
-        if not client.collection_exists(self._collection_name):
+        if not self._retrying(lambda client: client.collection_exists(self._collection_name)):
             return False
+        client = self._connect()
         result = client.count(
             self._collection_name,
             count_filter=models.Filter(
@@ -318,18 +351,16 @@ class QdrantStore(VectorStore):
         return points[0].payload.get("published_ts") if points else None
 
     def _ensure_collection(self) -> str:
-        client = self._connect()
-        if not client.collection_exists(self._collection_name):
+        if not self._retrying(lambda client: client.collection_exists(self._collection_name)):
             raise RuntimeError("Индекс пуст — сначала выполни `python -m src.cli index`")
         return self._collection_name
 
     def search_dense(self, query_vector: list[float], k: int) -> list[dict[str, Any]]:
         """Dense-only поиск — используется для сравнения в eval."""
-        client = self._connect()
         collection = self._ensure_collection()
-        result = client.query_points(
+        result = self._retrying(lambda client: client.query_points(
             collection, query=query_vector, using=_DENSE_VECTOR_NAME, limit=k, with_payload=True
-        )
+        ))
         return [point.payload for point in result.points]
 
     def search_hybrid(self, query_text: str, query_vector: list[float], k: int) -> list[dict[str, Any]]:
@@ -341,7 +372,6 @@ class QdrantStore(VectorStore):
         уже готовый dense `query_vector`, как и раньше для LanceDB, и понятия
         не имеет о sparse.
         """
-        client = self._connect()
         collection = self._ensure_collection()
         sparse = embed.embed_sparse([query_text])[0]
         prefetch_limit = max(k * _PREFETCH_MULTIPLIER, config.TOP_K_RETRIEVE)
@@ -354,13 +384,13 @@ class QdrantStore(VectorStore):
                     limit=prefetch_limit,
                 )
             )
-        result = client.query_points(
+        result = self._retrying(lambda client: client.query_points(
             collection,
             prefetch=prefetch,
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=k,
             with_payload=True,
-        )
+        ))
         return [point.payload for point in result.points]
 
     # --- langchain_core.vectorstores.VectorStore ---

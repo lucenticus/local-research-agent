@@ -6,12 +6,13 @@ docstring: только для тестов, продовый код всегд�
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from qdrant_client import QdrantClient
 
-from datetime import datetime, timedelta, timezone
-
+from src.store import qdrant_store
 from src.store.qdrant_store import (
     Chunk, QdrantStore, document_to_hit, hit_to_document, published_timestamp,
 )
@@ -243,3 +244,44 @@ def test_add_chunks_splits_large_upserts_into_batches(tmp_path, monkeypatch):
     store.add_chunks(chunks)
     assert sizes == [2, 2, 1]
     assert all(store.has_source(f"s{i}") for i in range(5))
+
+
+def test_a_stale_connection_is_retried_once(monkeypatch):
+    """Клиент держит пул keep-alive-соединений. Сервер закрывает простоявшее,
+    пул об этом не знает и отдаёт его следующему запросу — тот падает, ничего
+    не выполнив. Поймано на замере: вопрос падал после того, как предыдущий
+    считался 4.5 минуты."""
+    store = QdrantStore(url="http://localhost:6333", collection_name="c")
+    clients = []
+    calls = []
+
+    class _Client:
+        def __init__(self):
+            clients.append(self)
+
+        def collection_exists(self, name):
+            calls.append(name)
+            if len(calls) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+            return True
+
+    monkeypatch.setattr(qdrant_store, "QdrantClient", lambda **kw: _Client())
+
+    assert store._ensure_collection() == "c"
+    assert len(calls) == 2, "первый вызов оборвался, второй должен пройти"
+    assert len(clients) == 2, "клиента надо пересоздать — старый пул держит мёртвое соединение"
+
+
+def test_a_second_disconnect_is_not_swallowed(monkeypatch):
+    """Ровно одна попытка. Второй обрыв подряд — это уже недоступный Qdrant,
+    и притворяться, что это лечится повтором, значит прятать поломку."""
+    store = QdrantStore(url="http://localhost:6333", collection_name="c")
+
+    class _AlwaysDown:
+        def collection_exists(self, name):
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    monkeypatch.setattr(qdrant_store, "QdrantClient", lambda **kw: _AlwaysDown())
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        store._ensure_collection()
